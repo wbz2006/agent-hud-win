@@ -1,0 +1,698 @@
+/*
+ * 视觉规格对齐原项目 Sources/AgentHUDDesktop/Notch/Simple/SimpleMeterView.swift
+ *
+ *   - 每个 agent 一个 cell：圆环（该 agent 自身 level 色）+ 品牌 logo + 百分比（tabular）
+ *   - 底板：纯黑 0.82 填充 + 1px 白色 0.14 描边，continuous 圆角
+ *   - 简约形态无光晕（原项目注释：a small floating panel with no glow behind it）
+ *   - 圆环 trim 从 0 到 usedPct，起点在顶部（rotationEffect -90）
+ *   - 配色取自原项目 StatusPalette.swift：
+ *       ok #3ddc84 · warning #ffd23f · critical #ff453a · idle #9a9aa0
+ */
+
+:root {
+  --ok: #3ddc84;
+  --warning: #ffd23f;
+  --critical: #ff453a;
+  --idle: #9a9aa0;
+
+  /*
+   * 原项目 SimpleMeterConfig / ScreenPlacement 的默认值（pt），一字不改地搬过来：
+   *   simpleSize = 22（环直径）· ringWidth = 1.5 · showsRings = true · showsNumbers = true
+   * 其余按 SimpleMeter.swift 的公式从 size 推导：
+   *   logo       = size * 0.55 = 12
+   *   fontSize   = max(9, size * 0.59) = 13
+   *   labelSpacing = size * 0.23 = 5
+   *   itemGap    = size * 0.45 = 10（侧边；横排且不显示数字时为 size*0.32）
+   *   insets     = top/bottom max(3, size*0.18)=4（侧边 +3）· left 4+1=5 · right size*0.45=10
+   *   edgeMargin = 3
+   * 必须带单位：裸数字在 width/height 里无效（此前踩过，logo 撑满窗口）。
+   */
+  --panel-fill: rgba(0, 0, 0, 0.82);
+  /* 面板/胶囊的不透明底色。窗口是 transparent，backdrop-filter 在透明窗口上
+   * 拿不到桌面像素做模糊，0.82 的黑会让底下的编辑器透出来（实测能看穿）。
+   * 所以面板单独用一个更实的底色。 */
+  --panel-solid: #0c0c0e;
+  /* 侧边停靠（竖排）的条厚度。必须与 main.js 的 SIDE_THICKNESS 一致，
+     否则 CSS 锁死的胶囊宽度会和主进程算的窗口宽度对不上。 */
+  --side-thickness: 52px;
+  --hairline: rgba(255, 255, 255, 0.14);
+  /* 环的轨道（底色圆）：0.14 太淡，在纯黑胶囊上几乎看不见，单独提到 0.30 */
+  --ring-track: rgba(255, 255, 255, 0.30);
+  --mark: 30px;          /* 环直径 = simpleSize */
+  --logo: 16px;          /* logo：原版公式 size*0.55=12，但那样环内黑边每侧 5px 太宽，放大到 16 让图标更醒目 */
+  --ring-width: 3px;   /* 原版 ringWidth=1.5pt，但 Windows 1.5x DPI 下会舍成 1 物理像素几乎看不见，加粗到 2.5 */
+  --item-gap: 10px;       /* 横排且不显示数字：size * 0.32（竖排由 body.vertical 覆盖为 10px） */
+  --label-spacing: 5px;  /* labelSpacing = size * 0.23（仅网格视图用） */
+  --font-size: 13px;     /* fontSize = max(9, size*0.59) = 13 */
+  --inset-top: 7px;      /* 侧边 insets.top = 4 + 3 */
+  --inset-left: 8px;     /* insets.left = 4 + 1 */
+  --inset-right: 8px;    /* 不显示数字时与左侧对称（原版 insets.right 只在有数字时才放大） */
+  --edge-margin: 3px;    /* edgeMargin */
+
+  --text: #f2f2f4;
+  --text-dim: rgba(242, 242, 244, 0.55);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  color: var(--text);
+  user-select: none;
+  /*
+   * 必须是 no-drag：drag 区域在 Windows 上会吞掉**滚轮事件**——
+   * 之前 html/body 设 drag，面板虽然自身 no-drag，但滚轮落在面板内的
+   * 子元素（.all-models 等）上时仍被 drag 吞掉，详情卡片根本滑不动。
+   * 窗口位置由 dock 配置决定，不需要拖拽移动，全局 no-drag 没有副作用。
+   */
+  -webkit-app-region: no-drag;
+}
+
+/* ---------- 底板（原项目 SimpleMeterView.body） ---------- */
+/* 圆角 = 高度的一半（胶囊形），原项目的 continuous 圆角在竖条上就是这个效果。
+ *
+ * -webkit-app-region: no-drag 是必需的 —— html/body 设了 drag 之后，
+ * drag 区域会把鼠标事件整个吞掉，mouseenter 永远不触发，
+ * 悬停展开与 hover 显隐全都失效（实测真实光标移入窗口中心也收不到事件）。
+ * 位置由 dock 配置决定，不需要拖动窗口，所以整体设 no-drag 没有副作用。
+ */
+.bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end; /* 环是绝对居中；统计与按钮靠右 */
+  gap: 12px;
+  /* 固定高度，不能用 100% —— 展开时窗口变高到 520，
+   * 100% 会让胶囊变成纵向巨椭圆（实测整块黑椭圆盖住面板）。 */
+  height: 48px;
+  flex: 0 0 48px;
+  /* 收起态只有环（绝对居中），左右各留 8px 保证胶囊两端有呼吸；
+   * 悬停态 stats/按钮靠右，右侧同样 8px。 */
+  padding: 0 var(--inset-right) 0 var(--inset-left);
+  background: var(--panel-fill);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  -webkit-app-region: no-drag;
+}
+
+/* ---------- agent marks：每个 agent 一个 cell ---------- */
+/*
+ * 圆环组必须在胶囊里**水平居中**。
+ *
+ * 之前用 left: var(--inset-left) 固定左边距，胶囊宽度随内容变，
+ * 右边就空出一大块，看起来整组偏左。
+ * 改为 left:50% + translateX(-50%)：无论收起态（只有环）还是悬停态
+ * （环+统计+按钮），环组都相对胶囊水平居中。
+ *
+ * 垂直同样用 50% + translateY(-50%)，以胶囊完整高度为基准，
+ * 不受 1px 边框参与计算的影响。
+ */
+/*
+ * 圆环组定位。
+ *
+ * 收起态：只有环 → 组必须相对胶囊水平居中。
+ * 悬停态：环 + 统计 + 按钮 → 环退到左边，统计与按钮占右侧，
+ *         否则环（绝对定位居中）会和统计文字直接叠在一起（截图实测重叠成一片）。
+ */
+.marks {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: var(--item-gap);
+  transition: left 180ms ease, transform 180ms ease;
+  -webkit-app-region: no-drag;
+}
+/* 悬停：环靠左让位给统计与按钮 */
+body.hovering .marks {
+  left: var(--inset-left);
+  transform: translateY(-50%);
+}
+
+/* cell = 环 + 金额，间距 = labelSpacing */
+.mark {
+  display: flex;
+  align-items: center;
+  gap: var(--label-spacing);
+}
+
+/*
+ * 今日金额：跟在环右侧（原版这里是百分比数字的位置）。
+ *
+ * 收起态不显示 —— 原版 Simple 形态只有「环 + logo」，用户也要求金额不常驻。
+ * 展开（悬停）时才出现。用 display:none 而非 opacity：
+ * measureBar() 靠子元素宽度求和，display:none 宽度为 0，
+ * 收起态窗口宽度才只按环计算，不会把胶囊撑宽。
+ */
+.mark-cost {
+  display: none;
+  font-size: var(--font-size);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+body.hovering .mark-cost {
+  display: block;
+}
+
+/*
+ * 竖排：金额改到环的**下方**显示，而不是右侧。
+ *
+ * 竖条只有 52px 宽，金额放右侧会溢出被面板盖住（之前直接隐藏了，导致用户
+ * 看不到花费信息）。竖排的可用空间是纵向的，所以把 cell 改成纵向排列，
+ * 金额落在环下面，居中对齐，既不溢出也不破坏对称。
+ */
+body.vertical .mark {
+  flex-direction: column;
+  gap: 3px;
+}
+body.vertical .mark-cost {
+  display: none; /* 默认（收起）不显示 */
+  font-size: 10px; /* 竖条窄，字号收小一点 */
+  line-height: 1;
+  text-align: center;
+}
+body.vertical.hovering .mark-cost {
+  display: block;
+}
+
+/* 圆环 + logo 叠放（原项目 ZStack） */
+.mark-icon {
+  position: relative;
+  width: var(--mark);
+  height: var(--mark);
+  flex: 0 0 var(--mark);
+}
+.mark-icon svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform: rotate(-90deg); /* 起点在顶部 */
+}
+.ring-track {
+  fill: none;
+  stroke: var(--ring-track);
+  stroke-width: var(--ring-width);
+}
+.ring-value {
+  fill: none;
+  stroke-width: var(--ring-width);
+  stroke-linecap: round;
+  /* r=15.5 → 周长 97.4 */
+  stroke-dasharray: 97.4;
+  stroke-dashoffset: 97.4;
+  transition: stroke-dashoffset 500ms ease, stroke 400ms ease;
+}
+/*
+ * 图标必须精确落在环心。
+ *
+ * 之前用 `inset:0 + margin:auto` 居中，在 1.5x DPI 下会偏：
+ *   环 30px×1.5 = 45 物理像素，logo 16px×1.5 = 24，
+ *   (45-24)/2 = 10.5 —— 半像素，布局引擎取整时往一侧偏，
+ *   肉眼就是"图标不在环中心"。
+ * 改用 top/left 50% + translate(-50%,-50%)：transform 由合成层处理，
+ * 支持半像素偏移，不会被布局取整。
+ */
+.mark-logo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: var(--logo);
+  height: var(--logo);
+  object-fit: contain;
+  /* 单色 vendor 的 logo 需按底色着色，这里统一提亮保证暗底可见 */
+  filter: brightness(1.35) saturate(1.1);
+}
+
+/*
+ * ChatGPT / Codex 的 artwork 是**纯黑**的，在黑色胶囊上几乎看不见
+ * （实测 Codex 那个环整个是黑的）。原项目 AgentArtwork 对它专门染色：
+ *   vendor == "ChatGPT" ? tinted(artwork, with: openAIGreen) : artwork
+ *   openAIGreen = srgb(16,163,127) = #10a37f
+ * CSS 用 filter 近似还原：把黑色先压平，再推到那个绿。
+ */
+.mark-logo[data-tint='openai'] {
+  filter: brightness(0) saturate(100%) invert(50%) sepia(45%) saturate(900%) hue-rotate(122deg) brightness(0.95) contrast(0.95);
+}
+
+/*
+ * 环心是 logo（原项目 ZStack { 圆环; AgentLogo(size: logo) }），
+ * 数字在环**右侧**（labelSpacing 5px），不是环心 —— 此前误把金额塞进环心，
+ * 导致 logo 被压到 11px 上移，与原版不符。
+ */
+/* 没有打包 artwork 的 vendor 退化为字母徽标（原项目同款兜底） */
+.mark-badge {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: var(--logo);
+  height: var(--logo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* 环右侧的数字：原版用 .monospacedDigitSystemFont(13, .regular)，
+   等宽数字保证多个环的数字对齐成列（labelColumn）。 */
+.mark-label {
+  font-size: var(--font-size);
+  font-weight: 400;
+  font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 折叠入口 +N / 收起 */
+.mark-more {
+  -webkit-app-region: no-drag;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.mark-more:hover { background: rgba(255, 255, 255, 0.15); color: var(--text); }
+
+/* 面板里的全部模型网格 */
+.all-models {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.mark.grid-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.mark.grid-item .mark-icon { grid-row: 1 / span 2; }
+.mark.grid-item .mark-label { min-width: 0; text-align: left; font-size: 11px; }
+.grid-meta {
+  font-size: 9px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 右侧总览统计 ---------- */
+.stats {
+  display: flex;
+  gap: 11px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+.stat { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; }
+.stat-v { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-k { font-size: 8px; color: var(--text-dim); white-space: nowrap; }
+
+/* ---------- 图标按钮 ---------- */
+.icon-btn {
+  -webkit-app-region: no-drag;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.icon-btn:hover { background: rgba(255, 255, 255, 0.18); color: var(--text); }
+
+/* ============================================================
+ * 收起态 = 原版 Simple 形态：只有圆环，没有统计、没有按钮。
+ * 悬停才露出统计与按钮（原版这些信息在悬停面板/菜单栏里）。
+ * 用 display:none 而非 opacity —— measureBar() 靠子元素宽度求和，
+ * display:none 的宽度为 0，窗口才能真正贴合"纯环"的内容宽度。
+ * 注意：必须放在 .stats / .icon-btn 定义**之后**，否则被它们的
+ * display:flex 覆盖（此前踩过，收起态统计仍然显示）。
+ * ============================================================ */
+.stats,
+.bar > .icon-btn { display: none; }
+body.hovering .stats { display: flex; }
+body.hovering .bar > .icon-btn { display: flex; }
+
+/* ---------- 悬停展开面板 ---------- */
+/* 面板是独立浮起的一张卡片，浮在栏下方。
+ * .panel 是 #bar 的兄弟节点（不在 bar 内部），所以 top 的百分比是相对窗口，
+ * 不能用 calc(100% + 8px) —— 必须写成固定值 = 栏高 44 + 缝隙 8 = 52px。 */
+.panel {
+  position: absolute;
+  top: 56px;
+  left: 8px;
+  right: 8px;
+  /* 面板高度上限 = 窗口可用高度。不能让 scrollHeight(1833) 直接撑开元素：
+     元素远高于窗口时 Chromium 会把它降级到非合成层，opacity 过渡直接失效
+     （实测 class=panel open 但 opacity 恒为 0，面板永远不显示）。 */
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--panel-solid);
+  border: 1px solid var(--hairline);
+  backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(-6px);
+  /* 180ms 与 renderer.js 的 FADE_MS 对齐：收起时 JS 会等这段动画结束再缩窗口 */
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+.panel.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin: 4px 0 8px;
+}
+.panel-time { text-transform: none; letter-spacing: 0; }
+
+.rates { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.rate-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 2px solid transparent;
+}
+.rate-row.limited {
+  background: rgba(255, 69, 58, 0.12);
+  border-left-color: var(--critical);
+}
+.rate-top { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.rate-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rate-state { font-size: 10px; font-weight: 700; flex: 0 0 auto; }
+.rate-state.ok { color: var(--ok); }
+.rate-state.limited { color: var(--critical); }
+.rate-meta { font-size: 9px; color: var(--text-dim); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.rate-provider {
+  font-size: 9px; color: var(--text-dim); flex: 0 0 auto;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px; padding: 1px 4px;
+}
+.rate-bar {
+  display: block; height: 3px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09); overflow: hidden;
+}
+.rate-bar-fill { display: block; height: 100%; border-radius: 2px; }
+.rate-hint { font-size: 9px; color: var(--text-dim); margin: 4px 0 10px; }
+
+.quotas { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+.quota-row { display: flex; flex-direction: column; gap: 3px; }
+.quota-top { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.quota-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-calls { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+.quota-credit { font-variant-numeric: tabular-nums; font-weight: 600; }
+.quota-credit.free { color: var(--ok); }
+.quota-credit.unknown { color: var(--text-dim); font-weight: 400; }
+.quota-track {
+  display: block; height: 4px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09); overflow: hidden;
+}
+.quota-fill { display: block; height: 100%; border-radius: 2px; }
+.quota-packs { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 2px; }
+.quota-pack {
+  font-size: 9px; color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px; padding: 1px 4px;
+}
+.quota-sep {
+  font-size: 9px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 8px 0 2px; padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.bar-label {
+  width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-dim);
+}
+.bar-track {
+  display: block; flex: 1 1 auto; height: 6px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09); overflow: hidden;
+}
+.bar-fill { display: block; height: 100%; border-radius: 3px; }
+.bar-val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.sessions { display: flex; flex-direction: column; gap: 5px; }
+.sess-row {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.sess-row:last-child { border-bottom: none; }
+.sess-name { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-tag {
+  display: inline-block; min-width: 26px; margin-right: 5px;
+  padding: 0 4px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.13); color: var(--text);
+  font-size: 9px; font-weight: 700; text-align: center; vertical-align: 1px;
+}
+.sess-tok { font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+
+.err {
+  position: absolute; top: 50px; left: 8px; right: 8px;
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(255, 69, 58, 0.18);
+  border: 1px solid rgba(255, 69, 58, 0.45);
+  font-size: 11px; color: #ffb3ae;
+}
+
+/* ============================================================
+ * 竖排（侧边停靠）
+ *
+ * 原项目侧边停靠是「竖着的一条」：marks 沿纵向排，胶囊占满整个窗口高度。
+ * 横排那套 `height:48px` + `left:50% 居中` 在竖排下全都不适用 ——
+ * 实测症状：bar 高度仍是 48（窗口 322 高），marks 被顶到 y=-31 裁掉，
+ * 环跑到窗口外只剩一两个，按钮挤在 (0,0) 叠成一堆。
+ * ============================================================ */
+body.vertical .bar {
+  /*
+   * 竖排：胶囊是**固定宽度的竖条**，高度只占内容。
+   *
+   * 之前用 width:100%/height:100%，窗口展开加宽加高后胶囊跟着撑满整个窗口
+   * （实测展开态 bar 变成 52x664），而内容只有 ~205px，上下各空 230px ——
+   * 看起来就是"环超出/竖条拉得老长"。
+   *
+   * 正确做法：宽度锁死竖条厚度 52；高度 auto（内容高），max-height:100% 兜底；
+   * 窗口加宽加高出来的空间全部留给面板（面板用 left:60 + top/bottom 定位）。
+   */
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  width: var(--side-thickness);
+  min-width: var(--side-thickness);
+  max-width: var(--side-thickness);
+  flex: 0 0 var(--side-thickness);
+  /*
+   * 竖条用**绝对定位锚定窗口垂直中心**，高度只占内容。
+   *
+   * 为什么不用 height:100%（哪怕它算出来刚好贴合）：
+   *   主进程 win.setBounds 改窗口高度是瞬时的，而 Chromium 的重排晚一帧。
+   *   用 100% 时，这一帧里 bar 仍按**旧窗口高度**布局，内容按旧尺寸居中——
+   *   窗口 130→245 的瞬间，环先出现"整体上移"（旧 130 里的居中位置）
+   *   下一帧才回到新位置。用户反复快速划过时就会偶尔撞见这个中间态
+   *   （反馈："偶尔圆环态整体上移 / 显示不全"）。
+   *
+   * 改成 top:50% + translateY(-50%) 后，bar 高度由内容决定（auto），
+   * 位移量是"自身高度的一半"，与窗口高度解耦 —— 窗口怎么变，内容都在中心。
+   *
+   * 注意需要 height:auto（内容高），否则 bar 高=窗口高时这段位移会把内容推出边界。
+   */
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  height: auto;
+  max-height: 100%;
+  /* 侧边 insets：上下 8、左右 8 */
+  padding: 8px;
+  border-radius: 999px;
+  /*
+   * 尺寸变化走过渡而不是硬跳：即使重排晚一帧，视觉上也是平滑移动，
+   * 不会出现"先错位再回正"的闪烁。cubic-bezier 与面板淡入同款手感。
+   */
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 竖排下 marks 回归 flex 子项，不再绝对定位 —— 绝对定位那套
+   top:50%/left:50%/translate(-50%,-50%) 是为横排居中写的，竖排会让它飞出窗口 */
+body.vertical .marks {
+  position: static;
+  transform: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--item-gap);
+  height: auto;
+}
+
+/* 竖排时统计与按钮纵向排在环下方，不再靠右 */
+body.vertical .stats {
+  display: none !important; /* 竖条太窄放不下统计，信息在悬停面板里看。
+    必须 !important：全局的 body.hovering .stats{display:flex} 优先级更高
+    （0,2,0 > 0,1,1），竖排悬停时会把统计区显示出来，把 marks 往下推、
+    环跑出竖条可见区域。 */
+}
+body.vertical .bar > .icon-btn {
+  display: none; /* 竖条放不下统计与常规按钮，交给托盘与热键 */
+}
+/*
+ * 竖排悬停保留两个按钮：☰（展开详情）与 ⚙（设置）。
+ * 其余（刷新/隐藏/退出）仍走托盘与热键。
+ * 悬停时显示在环的下方，尺寸收小以适配 52px 条宽。
+ */
+body.vertical.hovering #expandBtn,
+body.vertical.hovering #settingsBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/*
+ * 竖排时面板贴在竖条右侧展开。
+ *
+ * .panel 是 #bar 的兄弟节点（不在 bar 内部），`left: 100%` 参照的是**窗口宽度**
+ * 而不是 bar 宽度 —— 竖排窗口展开后宽度 = 面板宽 + 60，用 100% 会把面板推到
+ * 窗口右侧外面。必须写成固定值：竖条厚度 52 + 缝隙 8 = 60px。
+ */
+body.vertical .panel {
+  top: 8px;
+  bottom: 8px;
+  left: 60px;
+  right: 8px;
+  width: auto;
+  min-width: 420px; /* 保证内容放得下，不至于被压成一条 */
+  max-height: none;
+  padding: 10px 12px;
+  border-radius: 14px;
+  overflow-y: auto;
+  /* 面板内容比竖条宽，禁止横向滚动（网格用单列自适应） */
+  overflow-x: hidden;
+  transform: translateX(-6px);
+  pointer-events: none;
+}
+body.vertical .panel .all-models {
+  grid-template-columns: 1fr;
+}
+/*
+ * 面板打开时（窗口被拉到 664 高）：竖条的绝对居中已在基础规则里，
+ * 这里只需保证不被 max-height 压缩、也不额外留 margin。
+ */
+body.vertical.panel-open .bar {
+  max-height: calc(100% - 8px);
+  margin: 0;
+}
+body.vertical .panel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+body.vertical .glow { display: none; }
+
+/* ============================================================
+ * 自定义滚动条
+ *
+ * 默认的 Chromium 滚动条是宽灰底 + 上下箭头，和这套深色玻璃 UI 完全不搭。
+ * 这里改成细窄的半透明滑块：不滚动时几乎隐形，悬停到面板时才显现。
+ * 用 ::-webkit-scrollbar 系列（Electron 走 Chromium，支持）。
+ * ============================================================ */
+.panel::-webkit-scrollbar {
+  width: 8px;
+}
+.panel::-webkit-scrollbar-track {
+  background: transparent; /* 轨道透明，不画灰底 */
+  margin: 6px 0;           /* 上下留点空隙，不与圆角冲突 */
+}
+.panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  border: 2px solid transparent; /* 让滑块看起来更细（实际可见 4px） */
+  background-clip: content-box;
+}
+.panel:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.26);
+  background-clip: content-box;
+}
+.panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.38);
+  background-clip: content-box;
+}
+/* 去掉默认的上下箭头按钮 */
+.panel::-webkit-scrollbar-button {
+  display: none;
+}
+.panel::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 设置窗口也用同一套，保证整体风格一致（设置页滚动容器是 <main class="body">） */
+.body::-webkit-scrollbar {
+  width: 8px;
+}
+.body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.body:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.26);
+  background-clip: content-box;
+}
+.body::-webkit-scrollbar-button {
+  display: none;
+}

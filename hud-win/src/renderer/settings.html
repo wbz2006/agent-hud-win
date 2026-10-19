@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Agent HUD 设置</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <div class="win">
+    <header class="head">
+      <span class="title">Agent HUD 设置</span>
+      <!-- 不画页面内 ✕：窗口有系统标题栏关闭按钮，画两个就是重复的
+           （用户截图反馈）。保留 closeBtn 的 IPC 能力但隐藏按钮本身。 -->
+      <button class="icon-btn" id="closeBtn" title="关闭" hidden>✕</button>
+    </header>
+
+    <main class="body">
+      <!-- 通用 -->
+      <section class="sect">
+        <h2>常规</h2>
+
+        <label class="row">
+          <span class="k">开机自启</span>
+          <input type="checkbox" id="autostart" />
+        </label>
+
+        <div class="row">
+          <span class="k">采集间隔</span>
+          <select id="interval">
+            <option value="10000">10 秒</option>
+            <option value="30000">30 秒</option>
+            <option value="60000">1 分钟</option>
+            <option value="300000">5 分钟</option>
+          </select>
+        </div>
+
+        <label class="row">
+          <span class="k">始终置顶</span>
+          <input type="checkbox" id="alwaysOnTop" />
+        </label>
+
+        <div class="row">
+          <span class="k">显示 / 隐藏 热键</span>
+          <input type="text" id="toggleHotkey" placeholder="如 Ctrl+Alt+H" />
+        </div>
+        <div class="hint" id="hotkeyStatus"></div>
+        <p class="hint">
+          按一次隐藏悬浮条，再按一次恢复；也可点悬浮条上的 ⊖ 按钮隐藏，从系统托盘菜单唤回。
+          留空表示禁用热键。修改后立即生效；若提示被占用，请换一个组合键。
+        </p>
+
+        <div class="row">
+          <span class="k">停靠位置</span>
+          <select id="dock">
+            <option value="top">屏幕顶部（横条）</option>
+            <option value="top-left">顶部靠左（横条）</option>
+            <option value="top-right">顶部靠右（横条）</option>
+            <option value="left">屏幕左侧（竖排）</option>
+            <option value="right">屏幕右侧（竖排）</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <span class="k">今日预算（元）</span>
+          <input type="number" id="dailyBudget" min="0.5" step="0.5" placeholder="8" />
+        </div>
+        <p class="hint">
+          圆环进度弧的分母：弧长 = 今日花费 ÷ 该预算。例如填 8，今天花了 2 元就填满 1/4 圈。填 0 或留空可禁用比例（弧只显示状态）。
+        </p>
+
+        <p class="hint">
+          竖排时 HUD 是贴在屏幕左/右边缘的一条竖条，垂直居中；悬停时面板朝屏幕内侧展开。
+        </p>
+      </section>
+
+      <!-- 中转站余额 -->
+      <section class="sect">
+        <h2>Codex 中转站余额</h2>
+        <p class="hint">
+          Codex 走中转站（api.lumivia.cn）而非官方账号，官方额度接口取不到，
+          这里填中转站自己的余额接口，Codex 的圆环就会显示<strong>剩余余额比例</strong>。
+          留空则圆环退回显示限流状态。
+        </p>
+
+        <div class="row">
+          <span class="k">站点地址</span>
+          <input type="text" id="relayBaseUrl" placeholder="https://api.lumivia.cn" />
+        </div>
+        <div class="row">
+          <span class="k">余额接口路径</span>
+          <input type="text" id="relayQuotaPath" placeholder="/api/user/self" />
+        </div>
+        <div class="row">
+          <span class="k">凭据（Token 或 Cookie）</span>
+          <input type="text" id="relayToken" placeholder="sk-xxx 或 session=..." />
+        </div>
+        <div class="row">
+          <span class="k">余额字段名</span>
+          <input type="text" id="relayBalanceField" placeholder="quota" />
+        </div>
+        <div class="row">
+          <span class="k">已用字段名</span>
+          <input type="text" id="relayUsedField" placeholder="used_quota" />
+        </div>
+        <div class="hint" id="relayStatus"></div>
+        <div class="btns" style="margin-top:6px">
+          <button class="btn" id="relayTestBtn">测试连接</button>
+        </div>
+      </section>
+
+      <!-- 圆环显示 -->
+      <section class="sect">
+        <h2>悬浮条圆环</h2>
+        <div class="row">
+          <span class="k">显示内容</span>
+          <select id="ringMode">
+            <option value="auto">自动（限流 &gt; 积分 &gt; 活跃度）</option>
+            <option value="rate">只显示限流状态</option>
+            <option value="credit">只显示剩余积分</option>
+            <option value="activity">只显示活跃度</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- 监控范围 -->
+      <section class="sect">
+        <h2>监控数据源</h2>
+        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
+        <div id="sourceList" class="sources"></div>
+      </section>
+
+      <!-- 限流（整组是 Beta 功能，默认关闭） -->
+      <section class="sect">
+        <h2><span class="beta-tag">Beta</span>限流监控</h2>
+
+        <label class="row beta-row">
+          <span class="k">启用限流监控</span>
+          <input type="checkbox" id="rateEnabled" />
+        </label>
+        <p class="hint">
+          从 DSH 会话日志里解析上游 <code>soft_rate</code>（429）报文，把「已限流 / 重置倒计时」
+          显示在圆环与详情面板里。判定规则还在验证中，误报可能把正常可用的模型标红 ——
+          因此<strong>默认关闭</strong>。
+        </p>
+
+        <div class="row">
+          <span class="k">宽限判定</span>
+          <select id="rateGrace">
+            <option value="0">不宽限（没有重置时间就不算限流）</option>
+            <option value="5">5 分钟</option>
+            <option value="15">15 分钟</option>
+            <option value="30">30 分钟</option>
+          </select>
+        </div>
+        <p class="hint">
+          上游有时返回不带重置时刻的限流报文。「宽限判定」决定：距最近一次限流多久内仍算限流中。
+        </p>
+
+        <label class="row">
+          <span class="k">监控 OpenCode（该渠道返回 403 渠道禁止，通常不可用）</span>
+          <input type="checkbox" id="rateOpenCode" />
+        </label>
+
+        <label class="row">
+          <span class="k">纳入 DSH 免费模型（<code>*-free</code>）的限流</span>
+          <input type="checkbox" id="betaRateFreeModel" />
+        </label>
+        <p class="hint">
+          免费模型（如 step-5-preview-free、space-bunny-free）的限流语义与付费模型不同，
+          判定更不确定 —— 单独留一个开关，方便只观察付费模型。
+        </p>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span class="status" id="status"></span>
+      <div class="btns">
+        <button class="btn" id="cancelBtn">取消</button>
+        <button class="btn primary" id="saveBtn">保存</button>
+      </div>
+    </footer>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

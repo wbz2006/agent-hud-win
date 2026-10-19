@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+
+# 打包产物（体积大、可再生）
+build/
+dist/
+
+# 运行时生成的用户配置与日志（含个人路径与中转站 Token，绝不入库）
+config.json
+error.log
+*.log
+
+# 调试截图与临时脚本
+shot-*.png
+_*.ps1
+_*.cjs
+anim/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

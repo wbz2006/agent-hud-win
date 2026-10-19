@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c20" />
+      <stop offset="1" stop-color="#0c0c0e" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="112.64" ry="112.64" fill="url(#bg)" />
+  <rect x="23.04" y="23.04" width="465.92" height="465.92"
+        rx="97.28" ry="97.28"
+        fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="6.144" />
+  
+    <circle cx="-56.31999999999999" cy="256" r="133.12" fill="none"
+            stroke="rgba(255,255,255,0.16)" stroke-width="38.4" />
+    <circle cx="-56.31999999999999" cy="256" r="133.12" fill="none"
+            stroke="#10a37f" stroke-width="38.4" stroke-linecap="round"
+            stroke-dasharray="602.22 234.20"
+            transform="rotate(-90 -56.31999999999999 256)" />
+  
+    <circle cx="256" cy="256" r="133.12" fill="none"
+            stroke="rgba(255,255,255,0.16)" stroke-width="38.4" />
+    <circle cx="256" cy="256" r="133.12" fill="none"
+            stroke="#e8834a" stroke-width="38.4" stroke-linecap="round"
+            stroke-dasharray="376.39 460.03"
+            transform="rotate(-90 256 256)" />
+  
+    <circle cx="568.32" cy="256" r="133.12" fill="none"
+            stroke="rgba(255,255,255,0.16)" stroke-width="38.4" />
+    <circle cx="568.32" cy="256" r="133.12" fill="none"
+            stroke="#4b8ef5" stroke-width="38.4" stroke-linecap="round"
+            stroke-dasharray="736.05 100.37"
+            transform="rotate(-90 568.32 256)" />
+</svg>

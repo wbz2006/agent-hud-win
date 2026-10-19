@@ -1,0 +1,107 @@
+'use strict';
+
+/**
+ * 打包脚本。
+ *
+ * 用 API 而不是命令行，是因为命令行传 `--asar '{"unpack":"..."}'` 在
+ * Windows 的 cmd/PowerShell 里 JSON 转义极易出错（踩过一次：参数被解析成
+ * 字符串字面量，unpack 静默失效，app.asar.unpacked 根本没生成）。
+ *
+ * 关键：`asar: { unpack: 'src/main/sources/**' }`
+ *   worker_threads **无法在 asar 内加载脚本**（new Worker 会抛
+ *   `Cannot find module .../app.asar/src/main/sources/worker.js`），
+ *   表现为悬浮条上常驻一个红色「采集失败：Cannot…」提示框。
+ *   把 sources 整个解包到 app.asar.unpacked，Node 才会去真实磁盘上读它。
+ *   main.js 里的 resolveSourcesDir() 负责把 __dirname 里的 app.asar 段替换掉。
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = __dirname;
+
+/** 版本号唯一真源：package.json。打包与 Release 都从这里取，避免多处不同步。 */
+const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
+
+(async () => {
+  // @electron/packager v20 是 ESM，导出名为 packager（没有 default）
+  const mod = await import('@electron/packager');
+  const packager = mod.packager || mod.default || mod;
+
+  const outPath = await packager({
+    dir: ROOT,
+    out: path.join(ROOT, 'build'),
+    overwrite: true,
+    platform: 'win32',
+    arch: 'x64',
+    // 输出目录名与 exe 名都取这个（package.json 的 name 是 npm 包名
+    // agent-hud-win，直接用它会让产物变成 agent-hud-win-win32-x64/
+    // agent-hud-win.exe，不够整洁）。产物固定为 AgentHUD-win32-x64/AgentHUD.exe。
+    name: 'AgentHUD',
+    appVersion: PACKAGE_VERSION,
+    electronVersion: '33.4.11',
+    // 把整个 src 解包到 asar 外。
+    //
+    // 踩过的坑：只解包 src/main/sources 时，worker.js 虽然能被 worker_threads
+    // 加载（它不能从 asar 内加载脚本），但它内部 require('../config') 指向的
+    // config.js 还在 asar 里 —— 解包目录里找不到，于是抛
+    //   Cannot find module '../config'
+    // 悬浮条上就常驻一个「采集失败：Cannot…」红框。
+    // 整目录解包后，main / sources / renderer 全在真实磁盘上，不存在跨边界 require。
+    asar: { unpackDir: 'src' },
+    // exe 文件图标（资源管理器 / 任务栏 / 开始菜单里显示的 AgentHUD.exe）
+    icon: path.join(ROOT, 'src', 'renderer', 'assets', 'app-icon.ico'),
+    // 渲染层的品牌 logo 也要真实文件（img src 指向 assets/），一并解包更稳
+    ignore: [
+      /^[/\\]dist[/\\]/,
+      /^[/\\]build[/\\]/,
+      /^[/\\]shot-.*\.png$/,
+      /^[/\\]_.*\.(js|ps1|py)$/,
+      /^[/\\]anim[/\\]/,
+    ],
+  });
+
+  const target = outPath[0];
+  console.log('Wrote new app to:', target);
+
+  // 写入 ASCII-only 的启动器（中文注释在 GBK 代码页下会被当命令执行）
+  const launcher = [
+    '@echo off',
+    'rem Agent HUD launcher. Clears ELECTRON_RUN_AS_NODE so the exe does not',
+    'rem degrade to plain Node when launched from an Electron host terminal.',
+    'rem Keep ASCII-only: non-ASCII comments break under some code pages.',
+    'cd /d "%~dp0"',
+    'if not exist "%~dp0AgentHUD.exe" (',
+    '  echo [ERROR] AgentHUD.exe not found next to this launcher.',
+    '  pause',
+    '  exit /b 1',
+    ')',
+    'set ELECTRON_RUN_AS_NODE=',
+    '"%~dp0AgentHUD.exe"',
+    '',
+  ].join('\r\n');
+  fs.writeFileSync(path.join(target, 'Run-AgentHUD.cmd'), launcher, 'ascii');
+
+  // 配置文件放到 exe 同级（main.js 的 resolveConfigFile 会指向这里）
+  const src = path.join(ROOT, 'config.json');
+  if (fs.existsSync(src)) {
+    fs.copyFileSync(src, path.join(target, 'config.json'));
+    console.log('config.json copied to exe directory');
+  }
+
+  // 自检：worker.js 与它依赖的 config.js 都必须解包到 asar 外。
+  // 只解包 sources 会导致 worker 里 require('../config') 找不到文件。
+  const base = path.join(target, 'resources', 'app.asar.unpacked', 'src', 'main');
+  const need = [path.join(base, 'sources', 'worker.js'), path.join(base, 'config.js')];
+  const missing = need.filter((f) => !fs.existsSync(f));
+  if (missing.length === 0) {
+    console.log('OK  src 已完整解包（worker + config 均在 asar 外）');
+  } else {
+    console.error('!! 解包不完整，缺失：');
+    missing.forEach((f) => console.error('   ' + f));
+    process.exitCode = 1;
+  }
+})().catch((e) => {
+  console.error('打包失败:', e);
+  process.exit(1);
+});

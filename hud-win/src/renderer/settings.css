@@ -1,0 +1,191 @@
+/* Agent HUD 设置窗口
+ * 与悬浮条共用同一套设计 token（见悬浮条的 styles.css）。 */
+
+:root {
+  --ok: #3ddc84;
+  --warning: #ffd23f;
+  --critical: #ff453a;
+  --surface: #16161a;
+  --surface-2: #1e1e23;
+  --stroke: rgba(255, 255, 255, 0.10);
+  --text: #f2f2f4;
+  --text-dim: rgba(242, 242, 244, 0.55);
+  --accent: #7aa2f7;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--surface);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+.win { display: flex; flex-direction: column; height: 100vh; }
+
+/* 标题栏 */
+.head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--surface-2);
+}
+.title { font-size: 13px; font-weight: 600; flex: 1; }
+
+/* 内容区 */
+.body { flex: 1; overflow-y: auto; padding: 4px 14px 14px; }
+
+/*
+ * 滚动条：黑色 + 窄。
+ * 不写这段时用 Windows 系统默认（浅灰、约 17px 宽），
+ * 在深色界面里非常突兀。改成 6px 宽、深色轨道 + 半透明深灰滑块。
+ */
+.body::-webkit-scrollbar { width: 6px; }
+.body::-webkit-scrollbar-track { background: transparent; }
+.body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 3px;
+}
+.body::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.65); }
+
+.sect {
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.sect:last-child { border-bottom: none; }
+.sect h2 {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.7px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* 一行设置项 */
+.row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+.row .k { flex: 1; }
+
+/* 控件 */
+input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+select {
+  min-width: 190px;
+  padding: 5px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit; font-size: 12px;
+  cursor: pointer;
+}
+select:focus { outline: none; border-color: var(--accent); }
+/* Windows 上展开的选项列表默认白底黑字，这里压回深色 */
+select option {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* 文本输入（热键等） */
+input[type="text"] {
+  min-width: 190px;
+  padding: 5px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit; font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+input[type="text"]:focus { outline: none; border-color: var(--accent); }
+input[type="text"]::placeholder { color: var(--text-dim); font-family: inherit; }
+
+/*
+ * 数字输入（今日预算等）—— 必须显式写全。
+ * 漏了这条时浏览器给 input[type=number] 用**白色默认背景**，
+ * 在深色界面里像一块亮斑（截图里"今日预算"那个框就是）。
+ */
+input[type="number"] {
+  min-width: 110px;
+  padding: 5px 8px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+input[type="number"]:focus { outline: none; border-color: var(--accent); }
+/* 去掉数字框右侧的上下箭头，与整体风格统一 */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
+/* 热键注册状态提示 */
+#hotkeyStatus.ok { color: var(--ok); }
+#hotkeyStatus.bad { color: var(--critical); }
+
+/* 说明文字 */
+.hint {
+  font-size: 11px; line-height: 1.5;
+  color: var(--text-dim);
+  margin: 2px 0 8px;
+}
+
+/* 数据源勾选列表 */
+.sources { display: flex; flex-direction: column; gap: 2px; }
+.src-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.src-row:hover { background: rgba(255, 255, 255, 0.04); }
+.src-name { flex: 1; }
+.src-count { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* 底栏 */
+.foot {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--stroke);
+  background: var(--surface-2);
+}
+.status { flex: 1; font-size: 11px; color: var(--text-dim); }
+/* Beta 功能：标签 + 缩进，视觉上与稳定功能区分开 */
+.beta-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #10131a;
+  background: var(--warning);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.beta-row { border-left: 2px solid rgba(255, 210, 63, 0.35); padding-left: 10px; }
+
+.btns { display: flex; gap: 8px; }
+
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit; font-size: 12px;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.btn:hover { background: rgba(255, 255, 255, 0.07); }
+.btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #10131a;
+  font-weight: 600;
+}
+.btn.primary:hover { filter: brightness(1.1); }

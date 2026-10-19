@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>Agent HUD</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!--
+    布局对齐原项目 SimpleMeterView.swift：
+      每个 agent 一个 cell = 圆环（该 agent 自身 level 色）+ 真实品牌 logo + 百分比数字。
+      简约形态**没有光晕**（原项目注释：a small floating panel with no glow behind it）。
+      底板：纯黑 0.82 + 1px 白色 0.14 描边，continuous 圆角。
+  -->
+  <div id="bar" class="bar">
+    <!-- 每个 agent 一个 mark：圆环 + logo + 百分比 -->
+    <div class="marks" id="marks"></div>
+
+    <!-- 总览：24h token / 会话 / 调用 -->
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-v" id="tokToday">--</span>
+        <span class="stat-k">24h token</span>
+      </div>
+      <div class="stat">
+        <span class="stat-v" id="sessCount">--</span>
+        <span class="stat-k">会话</span>
+      </div>
+      <div class="stat">
+        <span class="stat-v" id="callCount">--</span>
+        <span class="stat-k">调用</span>
+      </div>
+    </div>
+
+    <button class="icon-btn" id="expandBtn" title="展开详情面板">☰</button>
+    <button class="icon-btn" id="refreshBtn" title="刷新">⟳</button>
+    <button class="icon-btn" id="settingsBtn" title="设置">⚙</button>
+    <button class="icon-btn" id="hideBtn" title="隐藏（用热键或托盘唤回）">⊖</button>
+    <button class="icon-btn" id="quitBtn" title="退出">✕</button>
+  </div>
+
+  <!-- 悬停展开的用量面板 -->
+  <div class="panel" id="panel">
+    <div class="panel-head">
+      <span>全部模型（24h 调用量）</span>
+      <span class="panel-time" id="allModelsNote"></span>
+    </div>
+    <div class="all-models" id="allModels"></div>
+
+    <div class="panel-head">
+      <span>免费模型频率限制（按模型）</span>
+      <span class="panel-time" id="rateNote"></span>
+    </div>
+    <div class="rates" id="rates"></div>
+
+    <div class="panel-head">
+      <span>额度（积分）</span>
+      <span class="panel-time" id="quotaNote"></span>
+    </div>
+    <div class="quotas" id="quotas"></div>
+
+    <div class="panel-head">
+      <span>模型用量</span>
+      <span class="panel-time" id="panelTime"></span>
+    </div>
+    <div class="bars" id="bars"></div>
+
+    <div class="panel-head">
+      <span>最近会话</span>
+      <span class="panel-time" id="filterNote"></span>
+    </div>
+    <div class="sessions" id="sessions"></div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
