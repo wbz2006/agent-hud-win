@@ -17,6 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const ROOT = __dirname;
 
@@ -100,6 +101,35 @@ const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
     console.error('!! 解包不完整，缺失：');
     missing.forEach((f) => console.error('   ' + f));
     process.exitCode = 1;
+  }
+
+  /*
+   * 代码签名（可选）。
+   *
+   * 只在 .certs/ 里有证书时才执行 —— 没证书也不能让打包失败，
+   * 因为开发和 CI 环境通常没有私钥。
+   *
+   * 签名必须在**打包完成后**做，且 exe 不能被占用（HUD 正在跑时签名会报
+   * "The file is being used by another process"）。所以这里先检查进程再签。
+   */
+  const pfx = path.join(ROOT, '.certs', 'AgentHUD-Dev.pfx');
+  if (fs.existsSync(pfx)) {
+    console.log('\n==> 代码签名');
+    try {
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'scripts', 'sign.ps1'),
+         '-Exe', path.join(target, 'AgentHUD.exe')],
+        { stdio: 'inherit' }
+      );
+    } catch (e) {
+      // 签名失败不影响产物可用，只是 SmartScreen 会更吓人，所以只警告不退出
+      console.warn('!! 签名失败（产物仍可用，但会提示未知发布者）');
+      console.warn('   常见原因：AgentHUD.exe 正在运行，请先退出再打包');
+    }
+  } else {
+    console.log('\n跳过代码签名（.certs/AgentHUD-Dev.pfx 不存在）');
+    console.log('  如需签名：powershell -ExecutionPolicy Bypass -File scripts\\make-cert.ps1');
   }
 })().catch((e) => {
   console.error('打包失败:', e);

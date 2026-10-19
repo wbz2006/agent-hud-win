@@ -65,6 +65,25 @@ npm run dist       # 打包 + 压成 dist/AgentHUD-<版本>-win32-x64.zip（发�
 > Windows 下 Electron 二进制直连 GitHub 通常不通，需先设置镜像：
 > `$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"`
 
+### 代码签名（可选）
+
+发布包默认用**自签名证书**签名（`pack.js` 在打包后自动执行）。脚本在 `hud-win/scripts/`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\make-cert.ps1    # 1. 生成证书（3 年有效期）
+powershell -ExecutionPolicy Bypass -File scripts\trust-cert.ps1   # 2. 导入受信任根（需点确认）
+npm run pack                                                      # 3. 打包时自动签名
+```
+
+- `scripts/get-signtool.ps1` 会自动获取 `signtool.exe`（从 NuGet 拉 21MB，无需装 1GB 的 Windows SDK）
+- `.certs/`（含私钥）与 `tools/signtool/` 都在 `.gitignore` 里，不会进仓库
+- 撤销信任：`scripts\trust-cert.ps1 -Remove`
+
+**自签名的局限（重要）**：签名只在你导入了证书的机器上被认作 `Valid`。
+别人下载后 Windows 仍会提示「未知发布者」—— 要面向陌生用户分发需要
+OV/EV 证书或 Azure Trusted Signing。自签名的价值在于：**能验证文件确实来自你**（内容未被篡改），
+适合团队内部分发或自己多台机器使用。
+
 ## 交互
 
 - **悬停** —— 悬浮条"活起来"：展开今日金额、露出按钮。不自动弹面板（避免鼠标扫过就弹一大块）。

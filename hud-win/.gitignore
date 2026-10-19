@@ -20,3 +20,12 @@ anim/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 代码签名私钥与口令 —— 绝不入库
+.certs/
+*.pfx
+*.p12
+*-password.txt
+
+# signtool 二进制（18MB，由 scripts/get-signtool.ps1 按需下载，不入库）
+tools/signtool/
