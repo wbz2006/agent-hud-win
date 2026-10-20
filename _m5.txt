@@ -1,0 +1,72 @@
+feat: 详情面板改为按工具分 Tab，限流区跟随 Beta 开关，Codex 显示模型金额
+
+一、面板顶部的工具 Tab
+
+不再把所有 agent 合并成一个统计。顶部四个 Tab：
+
+  全部 / Claude Code / Codex / DSH
+
+- Tab 由 bySource 动态生成，只渲染有数据且采集成功的源
+  （没装 Claude Code 的人不会看到一个空 Tab）
+- 每个 Tab 只看自己的模型用量与最近会话
+- Tab 带品牌小图标，选中态高亮
+- 当前选中的源若被关掉（设置里取消勾选），自动退回「全部」
+
+为什么分开：三个 agent 的 token 口径完全不同（Claude 按 message.usage、
+Codex 按 token_usage_record、DSH 按 data.usage），合并成一个数字既没意义
+也看不出是谁在烧 token。
+
+二、限流区仅在 Beta 开启时显示
+
+用户要求：没启用 Beta 功能时，卡片里不应出现那块内容。
+
+- 新增 #rateSection 容器，render 时按
+  `appConfig.rateEnabled || appConfig.betaRateFreeModel` 决定 hidden
+- 关闭时连"暂无频率限制记录"这类占位文案也不渲染
+- appConfig 在 loadBudget() 里缓存，设置页保存后即时生效，无需重启
+
+三、额度（积分）区按 Tab 显隐
+
+积分概念只有 DSH 源有（WorkBuddy 等）。切到 Codex / Claude 时隐藏，
+否则会显示一堆与该工具无关的积分包。
+
+四、Codex Tab 显示每个模型的今日花费
+
+原来只有 app 级总账（codex 一笔），看不到"哪个模型贵"。
+
+采集层：
+- ccdb.js   候选字段新增 MODEL_CANDIDATES（model / request_model / model_name）
+- ccswitch.js readTodayCost 增加按 (app, model) 分组的聚合，输出
+             todayCost.byAppModel[appType][modelName] = {usd, cny, requests}
+             模型级失败不影响 byApp 主数据；库没有 model 字段时退化为空表
+
+渲染层：
+- 用量条右侧新增金额列（等宽数字，右对齐）
+- 模型名对不上时做后缀/大小写模糊匹配（findCostModelFallback），
+  避免整列显示"—"
+- 账本里确实没记录的模型（如免费模型、走官方渠道的）显示"—"，
+  不编造金额
+
+五、概况行改为随 Tab 变化
+
+以前的 renderAllGrid 是一整面"全部模型"卡片墙，既占地方又与下方用量条重复。
+改为单行概览：
+  - 全部 Tab：`3 个工具在采集 · 21 个模型用过` + 今日总花费
+  - 具体工具：`5 个模型 · 203 个会话 · 今日 ￥3.76`
+
+六、修复与防护
+
+- 修了一个自己引入的 bug：重写 renderAllGrid 后忘在 render() 里调用，
+  概况行永远空白但页面不报错
+- 新增 test/renderer-wiring.test.js（6 项静态防护）：
+  render() 必须调用 renderTabs / renderAllGrid / renderMarks / renderQuotas；
+  限流显隐必须依据配置而非写死；Tab 切换必须重绘；被调用的 render* 函数必须存在
+
+验证（打包 + 签名后，连真实 exe 实测）：
+- Tab 列表正确，切换生效
+- Beta 关闭时 rateSection.hidden=true
+- Codex Tab 概况「5 个模型 · 203 个会话 · 今日 ￥3.76」，
+  模型金额 gpt-6.1-sol ￥3.48 / gpt-6-astra ￥0.23 / gpt-5.6-sol ￥0.05，
+  账本无记录的模型显示"—"
+- 全部 Tab 概况「3 个工具在采集 · 21 个模型用过」
+- 模型级金额之和 = app 级总额（四舍五入误差内），数据自洽

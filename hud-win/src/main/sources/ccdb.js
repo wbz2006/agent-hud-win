@@ -60,6 +60,9 @@ const CREATED_AT_CANDIDATES = ['created_at', 'createdAt', 'timestamp', 'ts'];
 /** 候选 provider 字段。 */
 const PROVIDER_CANDIDATES = ['provider_id', 'providerId', 'provider'];
 
+/** 候选模型名字段（用于按模型拆金额）。 */
+const MODEL_CANDIDATES = ['model', 'request_model', 'model_name'];
+
 /** 候选 provider 名称表（LEFT JOIN 用）。 */
 const PROVIDER_TABLE_CANDIDATES = ['providers', 'provider'];
 
@@ -190,6 +193,7 @@ print(json.dumps(cols))
       cost,
       createdAt: pick(cols, CREATED_AT_CANDIDATES),
       provider: pick(cols, PROVIDER_CANDIDATES),
+      model: pick(cols, MODEL_CANDIDATES),
       providerTable: pick(db.tables, PROVIDER_TABLE_CANDIDATES),
     };
     cache = { at: now, result };

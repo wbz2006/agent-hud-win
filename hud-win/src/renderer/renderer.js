@@ -38,6 +38,47 @@ function fmtDur(ms) {
  * 不做"剩余额度百分比"——配额模型无法从日志反推（实测同样 24h 窗口，
  * 一次 973 次才触发、一次 123 次就触发），编公式会给出错误数字。
  */
+/**
+ * 按当前 Tab 过滤限流条目。
+ *
+ * 限流数据来自 DSH 的 provider 级日志，provider 名与三个数据源 key
+ * 对不上（如 workbuddy / opencode2dsh 都属于 dsh）。所以过滤保留：
+ *   - 'all' → 全部
+ *   - 'dsh' → 全部（限流本来就是 dsh 内部的）
+ *   - 其它源 → 空（该源没有限流数据来源）
+ */
+function filterRatesBySource(rateLimits, source) {
+  const list = Array.isArray(rateLimits) ? rateLimits : [];
+  if (source === 'all' || source === 'dsh') return list;
+  return [];
+}
+
+/**
+ * 模型名对不上时的模糊匹配。
+ *
+ * CC Switch 记的 model 名与 agent 会话里的可能差在大小写/后缀
+ * （如 gpt-6.1-sol vs gpt-6.1-sol-2024）。退化匹配避免整列显示"—"。
+ */
+function findCostModelFallback(costModels, name) {
+  const keys = Object.keys(costModels || {});
+  const base = String(name || '')
+    .toLowerCase()
+    .replace(/[-_ ]?\d{6,8}$/, ''); // 去掉结尾日期
+  const hit = keys.find((k) => {
+    const kk = k.toLowerCase().replace(/[-_ ]?\d{6,8}$/, '');
+    return kk === base || kk.startsWith(base) || base.startsWith(kk);
+  });
+  return hit ? costModels[hit] : null;
+}
+
+/** 金额格式化：小于 1 元显示两位小数，大于 1 元保留两位，够看就行。 */
+function fmtMoney(n) {
+  const v = Number(n) || 0;
+  if (v === 0) return '0.00';
+  if (v < 0.01) return v.toFixed(4);
+  return v.toFixed(2);
+}
+
 function renderRates(rateLimits) {
   const el = $('rates');
   const list = Array.isArray(rateLimits) ? rateLimits : [];
@@ -259,6 +300,53 @@ function levelFor(ratio) {
 let currentSummary = null;
 let activeSource = 'all'; // 'all' 或具体源 key
 
+/**
+ * 面板顶部的工具切换 Tab。
+ *
+ * 为什么按工具分开而不是合并统计：三个 agent 的 token 口径不同
+ * （Claude 按 message.usage、Codex 按 token_usage_record、DSH 按 data.usage），
+ * 合并成一个数字既没意义也看不出是谁在烧。用户要的是「切到某个工具，
+ * 只看它自己的模型用量与会话」。
+ *
+ * 只渲染有数据的源 —— 没装 Claude Code 的人不该看到一个空的 Claude Tab。
+ */
+function renderTabs(summary) {
+  const el = $('panelTabs');
+  if (!el) return;
+
+  const bySrc = summary.bySource || {};
+  const tabs = [{ key: 'all', label: '全部', icon: null }];
+  for (const [key, s] of Object.entries(bySrc)) {
+    if (!s || !s.ok) continue; // 采集失败的源不占位置
+    tabs.push({ key, label: s.label || key, logo: SOURCE_VENDOR[key] && SOURCE_VENDOR[key].logo });
+  }
+
+  // 当前选中的源如果消失了（比如关掉了数据源），退回「全部」
+  if (activeSource !== 'all' && !tabs.some((t) => t.key === activeSource)) {
+    activeSource = 'all';
+  }
+
+  el.innerHTML = tabs
+    .map((t) => {
+      const on = t.key === activeSource;
+      const logo = t.logo
+        ? `<img class="tab-logo" src="assets/${t.logo}" alt="" />`
+        : '';
+      return `<button class="tab${on ? ' on' : ''}" data-src="${esc(t.key)}">${logo}<span>${esc(t.label)}</span></button>`;
+    })
+    .join('');
+
+  // 事件绑定（重新渲染后要重新绑）
+  el.querySelectorAll('.tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.src;
+      if (key === activeSource) return;
+      activeSource = key;
+      if (currentSummary) render(currentSummary);
+    });
+  });
+}
+
 function pickView(summary) {
   if (activeSource === 'all') {
     return {
@@ -389,12 +477,23 @@ let marksExpanded = false;
  */
 let DAILY_BUDGET_CNY = 8;
 
-/** 从主进程拉配置，更新预算分母（启动时调用一次）。 */
+/**
+ * 缓存一份配置（决定面板显示哪些区块）。
+ *
+ * 目前用到的地方：Beta 限流监控是否开启 —— 没开就整块隐藏限流区。
+ * 每次配置变更（设置页保存）都会刷新并重绘，无需重启。
+ */
+let appConfig = null;
+
+/** 从主进程拉配置，更新预算分母与区块开关（启动时调用一次）。 */
 async function loadBudget() {
   try {
     const cfg = await window.hud.getConfig();
+    appConfig = cfg || null;
     const n = Number(cfg && cfg.dailyBudgetCny);
     if (Number.isFinite(n) && n > 0) DAILY_BUDGET_CNY = n;
+    // 配置拿到后立刻重绘一次，让限流区/额度区按开关决定显隐
+    if (currentSummary) render(currentSummary);
   } catch (_) {
     /* 拉不到就用默认值 */
   }
@@ -626,45 +725,74 @@ function measureBar() {
  * 悬停面板里的完整模型网格：全部 provider 都列出，
  * 补上悬浮条折叠掉的那部分（用户要看全时在这里看）。
  */
+/**
+ * 面板首屏的"概况"区。
+ *
+ * 语义按当前 Tab 变化：
+ *   - 「全部」Tab：给一句全局概览（多少模型、多少在跑），不堆细节
+ *   - 具体工具 Tab：给该工具自己的统计（模型数 / 24h 用过几个 / 今日花费）
+ *
+ * 以前这里是一整面"全部模型"卡片墙，既占地方又和下面的用量条重复。
+ */
 function renderAllGrid(summary) {
   const el = $('allModels');
   if (!el) return;
-  const rl = (summary.rateLimits || []).slice();
-  const byApp = (summary.todayCost && summary.todayCost.ok && summary.todayCost.byApp) || {};
-  rl.sort((a, b) => (b.windowCalls || 0) - (a.windowCalls || 0));
-  el.innerHTML = rl
-    .map((r) => {
-      // 把模型归到 app_type（DSH 内部的 provider 都算 dsh 那笔花费）
-      const prov = (r.provider || '').replace(/-vision$/, '');
-      const appKey = Object.keys(byApp).find((k) => prov === k || prov.startsWith(k));
-      const app = appKey ? byApp[appKey] : null;
-      return markHtml(r, {
-        compact: false,
-        todayUsd: app && typeof app.usd === 'number' ? app.usd : null,
-        todayCny: app && typeof app.cny === 'number' ? app.cny : null,
-      });
-    })
-    .join('');
+
+  const tc = summary.todayCost;
+  const byApp = (tc && tc.ok && tc.byApp) || {};
+  const costUnit = (tc && tc.ok && tc.unit) || '￥';
+
+  if (activeSource === 'all') {
+    // 全部 Tab：只给一行概览，不画卡片墙
+    const models = Object.keys(summary.byModel || {}).length;
+    const activeSrc = Object.values(summary.bySource || {}).filter((s) => s && s.ok).length;
+    el.innerHTML = `<div class="overview-row">
+      <span class="ov-item"><b>${activeSrc}</b> 个工具在采集</span>
+      <span class="ov-sep">·</span>
+      <span class="ov-item"><b>${models}</b> 个模型用过</span>
+    </div>`;
+
+    const note = $('allModelsNote');
+    if (note) {
+      if (tc && tc.ok === false) {
+        note.innerHTML =
+          `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
+          `<span class="cost-degrade-sub">（来自 CC Switch 账本，其余数据不受影响）</span></span>`;
+      } else if (tc && tc.ok) {
+        note.textContent = `今日 ${costUnit}${fmtMoney(tc.totalCny)}`;
+      } else {
+        note.textContent = '';
+      }
+    }
+    return;
+  }
+
+  // 具体工具 Tab：显示这个工具自己的三个数字
+  const src = (summary.bySource || {})[activeSource] || {};
+  const srcModels = Object.keys(byModelOf(summary, activeSource) || {}).length;
+  const appCost = byApp[activeSource];
+
+  el.innerHTML = `<div class="overview-row">
+    <span class="ov-item"><b>${srcModels}</b> 个模型</span>
+    <span class="ov-sep">·</span>
+    <span class="ov-item"><b>${src.sessionCount || 0}</b> 个会话</span>
+    ${
+      appCost
+        ? `<span class="ov-sep">·</span><span class="ov-item ov-cost">今日 <b>${costUnit}${fmtMoney(appCost.cny)}</b></span>`
+        : ''
+    }
+  </div>`;
 
   const note = $('allModelsNote');
   if (note) {
-    /*
-     * CC Switch 降级提示。
-     *
-     * 花费数据来自 CC Switch 本地账本，它升级时表结构可能变。探测失败时
-     * 不该让整个面板崩，只在这一行说明"为什么没有花费"，其余数据照常显示。
-     * 提示语写清楚这是外部工具的问题、不是 HUD 坏了，避免用户误判。
-     */
-    const tc = summary.todayCost;
-    if (tc && tc.ok === false) {
+    // 降级提示只在有花费概念（codex）时才有意义
+    if (activeSource === 'codex' && tc && tc.ok === false) {
       note.innerHTML =
         `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
-        `<span class="cost-degrade-sub">（来自 CC Switch 账本，其余数据不受影响）</span></span>`;
-      return;
+        `<span class="cost-degrade-sub">（来自 CC Switch 账本）</span></span>`;
+    } else {
+      note.textContent = '';
     }
-    const active = rl.filter((r) => (r.windowCalls || 0) > 0).length;
-    const limited = rl.filter((r) => r.limited).length;
-    note.textContent = `${rl.length} 个模型 · ${active} 个 24h 内用过 · ${limited} 个限流中`;
   }
 }
 
@@ -675,6 +803,9 @@ function render(summary) {
 
   // 简约形态：每个 agent 一个 mark（圆环 + logo + 百分比），无总览圆环、无光晕
   renderMarks(summary);
+  // 顶部工具 Tab（数据到了才渲染，避免闪一下空 Tab）
+  renderTabs(summary);
+  // 概况行：随当前 Tab 变化（全部=全局概览，具体工具=该工具统计 + 今日花费）
   renderAllGrid(summary);
 
   const view = pickView(summary);
@@ -696,18 +827,53 @@ function render(summary) {
   $('panelTime').textContent = new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false });
   $('filterNote').textContent = activeSource === 'all' ? '' : view.label;
 
-  // 面板各区
-  if (activeSource === 'all') {
-    renderRates(summary.rateLimits);
+  /*
+   * 限流区：只有「设置 → Beta 限流监控」开启时才显示。
+   *
+   * 用户明确要求：没开 Beta 就完全不要出现这块内容（原标题"免费模型频率限制"、
+   * "暂无频率限制记录"这些都不该占地方）。判定用 betaRateFreeModel 或
+   * rateEnabled 任一为真 —— 后者是总开关，前者是免费模型子开关，
+   * 总开关开着时即便只监控付费模型也该显示这一区。
+   */
+  const rateOn = !!(appConfig && (appConfig.rateEnabled || appConfig.betaRateFreeModel));
+  const rateSection = $('rateSection');
+  if (rateSection) rateSection.hidden = !rateOn;
+  if (rateOn) {
+    renderRates(filterRatesBySource(summary.rateLimits, activeSource));
+  } else {
+    $('rates').innerHTML = '';
+    $('rateNote').textContent = '';
+  }
+
+  /*
+   * 额度区：只有 DSH 源有积分概念（WorkBuddy 等）。
+   * 切到 Codex / Claude 时藏起来，否则会显示一堆与该工具无关的积分包。
+   */
+  const quotaSection = $('quotaSection');
+  const showQuota = activeSource === 'all' || activeSource === 'dsh';
+  if (quotaSection) quotaSection.hidden = !showQuota;
+  if (showQuota) {
     renderQuotas(summary);
   } else {
-    $('rates').innerHTML = '<div class="rate-hint">切换到 ALL 查看</div>';
-    $('rateNote').textContent = '';
-    $('quotas').innerHTML = '<div class="quota-hint">切换到 ALL 查看额度</div>';
+    $('quotas').innerHTML = '';
     $('quotaNote').textContent = '';
   }
 
-  // 模型用量条
+  /*
+   * 模型用量条：按当前 Tab 过滤。
+   *
+   * Codex Tab 额外显示每个模型的今日花费（来自 CC Switch 按 model 聚合的
+   * byAppModel）。这个数字是真的钱，比 token 更有用 —— 中转站按模型定价，
+   * 光看 token 不知道哪个模型贵。
+   */
+  const costModels =
+    summary.todayCost && summary.todayCost.ok && summary.todayCost.byAppModel
+      ? summary.todayCost.byAppModel[activeSource] || null
+      : null;
+  const costUnit =
+    summary.todayCost && summary.todayCost.ok ? summary.todayCost.unit || '￥' : '￥';
+  const showCost = activeSource === 'codex' && !!costModels;
+
   const models = Object.entries(view.byModel || {})
     .map(([m, u]) => ({
       m,
@@ -723,10 +889,17 @@ function render(summary) {
       .map((x, i) => {
         const w = Math.max(2, Math.round((x.v / max) * 100));
         const color = AGENT_COLORS[i % AGENT_COLORS.length];
+        // 该模型今天花的钱（只对 codex 有）
+        const c = showCost
+          ? costModels[x.m] || findCostModelFallback(costModels, x.m)
+          : null;
+        const costHtml = showCost
+          ? `<span class="bar-cost">${c ? costUnit + fmtMoney(c.cny) : '—'}</span>`
+          : '';
         return `<div class="bar-row">
         <span class="bar-label" title="${x.m}">${modelShortName(x.m)}</span>
         <span class="bar-track"><span class="bar-fill" style="width:${w}%;background:${color}"></span></span>
-        <span class="bar-val">${fmtTokens(x.v)}</span>
+        <span class="bar-val">${fmtTokens(x.v)}</span>${costHtml}
       </div>`;
       })
       .join('') || '<div class="bar-row"><span class="bar-label">无数据</span></div>';

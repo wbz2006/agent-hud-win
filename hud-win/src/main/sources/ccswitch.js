@@ -175,6 +175,27 @@ function readTodayCost(mode = COST_MODE.INTERNAL) {
     GROUP BY app
   `;
 
+  /*
+   * 按模型聚合（Codex 面板要显示"每个模型今天花了多少钱"）。
+   *
+   * model 是可选字段：老版本库没有它时退化为空表，不影响 byApp 主功能。
+   * 只取 codex 相关的行 —— byApp 证明只有 codex 走中转站计费，
+   * 其他 app_type 即使有 model 也不是中转站花费，混进来会误导。
+   */
+  const hasModel = !!s.model;
+  const modelSql = hasModel
+    ? `
+    SELECT ${hasApp ? s.appType : 'NULL'} AS app,
+           ${s.model} AS model,
+           COUNT(*) AS req,
+           SUM(CAST(${s.cost} AS REAL)) AS usd
+    FROM ${s.logTable}
+    ${where}
+    GROUP BY app, model
+    ORDER BY usd DESC
+  `
+    : null;
+
   try {
     const rows = query(sql);
     const byApp = {};
@@ -185,9 +206,31 @@ function readTodayCost(mode = COST_MODE.INTERNAL) {
       byApp[key] = { usd: u, cny: toDisplay(u, mode), requests: Number(req || 0) };
       total += u;
     }
+
+    // 模型级金额：{ appType: { modelName: {usd, cny, requests} } }
+    const byAppModel = {};
+    if (modelSql) {
+      try {
+        for (const [app, model, req, usd] of query(modelSql)) {
+          const u = Number(usd || 0);
+          const appKey = app == null ? '_all' : String(app);
+          const modelKey = model == null || model === '' ? '(未知模型)' : String(model);
+          if (!byAppModel[appKey]) byAppModel[appKey] = {};
+          byAppModel[appKey][modelKey] = {
+            usd: u,
+            cny: toDisplay(u, mode),
+            requests: Number(req || 0),
+          };
+        }
+      } catch {
+        // 模型级只是锦上添花，失败不影响 app 级主数据
+      }
+    }
+
     return {
       ok: true,
       byApp,
+      byAppModel,
       totalUsd: total,
       totalCny: toDisplay(total, mode),
       unit: unitOf(mode),

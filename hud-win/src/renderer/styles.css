@@ -712,3 +712,93 @@ body.vertical .glow { display: none; }
   color: rgba(255, 255, 255, 0.42);
   margin-left: 6px;
 }
+
+/* ---------- 面板顶部工具 Tab ---------- */
+/*
+ * 每个工具一个 Tab，切换后只看该工具自己的数据（不合并统计）。
+ * 视觉上沿用胶囊风格：选中项用更亮的背景 + 白色文字，未选中半透明。
+ */
+.panel-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 0 0 8px;
+  flex-wrap: wrap;
+  /* 与其他区块的分隔线一致 */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 8px;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.tab.on {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-weight: 600;
+}
+
+.tab-logo {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+/* ---------- 概况行 ---------- */
+/*
+ * 「全部」Tab 与具体工具 Tab 共用的单行概览。
+ * 比原来的卡片墙省空间，也避免与下方用量条重复。
+ */
+.overview-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.62);
+  flex-wrap: wrap;
+}
+
+.overview-row b {
+  color: rgba(255, 255, 255, 0.92);
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-sep {
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.ov-cost b {
+  color: #6fd6a8;
+}
+
+/* ---------- 用量条右侧的金额列 ---------- */
+/*
+ * Codex Tab 专用：每个模型今天花了多少钱。
+ * 用固定宽度 + 右对齐 + 等宽数字，纵向看起来整齐。
+ */
+.bar-cost {
+  flex: 0 0 62px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(140, 220, 180, 0.92);
+}

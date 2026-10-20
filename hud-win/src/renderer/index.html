@@ -43,23 +43,40 @@
 
   <!-- 悬停展开的用量面板 -->
   <div class="panel" id="panel">
+    <!--
+      顶部：按工具切换的 Tab。
+      每个工具独立视图，不做"全部合并统计" —— 混在一起看不出是哪个 agent 在烧 token。
+      Tab 由 renderer.js 按 bySource 动态生成（哪个源有数据才显示哪个）。
+    -->
+    <div class="panel-tabs" id="panelTabs"></div>
+
+    <!-- 当前 Tab 的概要行：源名 + 会话数 + 今日花费 -->
     <div class="panel-head">
-      <span>全部模型（24h 调用量）</span>
+      <span id="tabTitle">全部模型（24h 调用量）</span>
       <span class="panel-time" id="allModelsNote"></span>
     </div>
     <div class="all-models" id="allModels"></div>
 
-    <div class="panel-head">
-      <span>免费模型频率限制（按模型）</span>
-      <span class="panel-time" id="rateNote"></span>
+    <!--
+      限流区：仅当「设置 → Beta 限流监控」启用时才显示。
+      未启用时整块隐藏（用户明确要求：没开 Beta 就不要显示这些内容）。
+    -->
+    <div id="rateSection" hidden>
+      <div class="panel-head">
+        <span>频率限制（按模型）</span>
+        <span class="panel-time" id="rateNote"></span>
+      </div>
+      <div class="rates" id="rates"></div>
     </div>
-    <div class="rates" id="rates"></div>
 
-    <div class="panel-head">
-      <span>额度（积分）</span>
-      <span class="panel-time" id="quotaNote"></span>
+    <!-- 额度（积分）：只有 DSH 源有，切到别的 Tab 时隐藏 -->
+    <div id="quotaSection">
+      <div class="panel-head">
+        <span>额度（积分）</span>
+        <span class="panel-time" id="quotaNote"></span>
+      </div>
+      <div class="quotas" id="quotas"></div>
     </div>
-    <div class="quotas" id="quotas"></div>
 
     <div class="panel-head">
       <span>模型用量</span>
