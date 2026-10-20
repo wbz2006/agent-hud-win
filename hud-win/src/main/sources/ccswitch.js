@@ -49,9 +49,46 @@ const ccdb = require('./ccdb');
  */
 const USD_TO_CNY = 5;
 
-/** 美元 → 人民币（保留 4 位，够显示到分） */
+/** 真实市场汇率（USD → CNY）。仅当用户选择「按真实汇率折算」时使用。 */
+const REAL_FX_RATE = 7.2;
+
+/**
+ * 金额换算模式（可在设置里切换）。
+ *
+ * - `'internal'`（默认）：跟 CC Switch 界面显示一致，总额 ÷ 5。
+ *   好处：和你在 CC Switch 里看到的数字完全对得上，不会怀疑"两边不一样"。
+ *
+ * - `'real'`：按真实汇率 ¥7.2/$ 折算。
+ *   好处：如果你在中转站按真实美元充值/结算，这个数字才是你实际花掉的人民币。
+ *   注意：库里存的 total_cost_usd 到底是不是"真美元"，取决于你的中转站怎么计价 ——
+ *   如果中转站本身就以"1 美元 = 5 元"的虚拟额度计费，这一项会让你看到偏高的数字。
+ *
+ * - `'raw'`：不换算，直接显示库里原始值（当作美元，前面标 $）。
+ *   适合自己核对账本、或中转站确实按美元结算且不想引入汇率假设的场景。
+ */
+const COST_MODE = { INTERNAL: 'internal', REAL: 'real', RAW: 'raw' };
+
+/**
+ * 换算成显示值。
+ * @param {number} usd 数据库原始值
+ * @param {'internal'|'real'|'raw'} mode 计价模式
+ * @returns {number}
+ */
+function toDisplay(usd, mode = COST_MODE.INTERNAL) {
+  const v = usd || 0;
+  if (mode === COST_MODE.RAW) return Math.round(v * 1e4) / 1e4;
+  if (mode === COST_MODE.REAL) return Math.round(v * REAL_FX_RATE * 1e4) / 1e4;
+  return Math.round((v / USD_TO_CNY) * 1e4) / 1e4;
+}
+
+/** 该模式下金额的单位符号。 */
+function unitOf(mode) {
+  return mode === COST_MODE.RAW ? '$' : '￥';
+}
+
+/** 兼容旧调用：等价于 toDisplay(usd, 'internal') */
 function toCny(usd) {
-  return Math.round((usd || 0) / USD_TO_CNY * 1e4) / 1e4;
+  return toDisplay(usd, COST_MODE.INTERNAL);
 }
 
 /**
@@ -107,12 +144,14 @@ function failReason() {
 /**
  * 今日（本地时区）各 app_type 的金额与请求数。
  *
+ * @param {'internal'|'real'|'raw'} [mode] 计价模式，默认 internal（与 CC Switch 显示一致）
  * @returns {{ok:boolean, byApp?:object, totalUsd?:number, totalCny?:number,
- *            unit?:string, reason?:string}}
+ *            unit?:string, mode?:string, reason?:string}}
  *   byApp: { codex: { usd, cny, requests }, claude: {...}, ... }
+ *   cny 字段存的是**按 mode 换算后的显示值**（名字保留 cny 是为了兼容旧调用方）。
  *   reason 仅在 ok=false 时出现，说明为什么没有数据（供 UI 展示）。
  */
-function readTodayCost() {
+function readTodayCost(mode = COST_MODE.INTERNAL) {
   const s = ccdb.probe();
   if (!s.ok) return degrade(failReason());
 
@@ -143,15 +182,16 @@ function readTodayCost() {
     for (const [app, req, usd] of rows) {
       const u = Number(usd || 0);
       const key = app == null ? '_all' : String(app);
-      byApp[key] = { usd: u, cny: toCny(u), requests: Number(req || 0) };
+      byApp[key] = { usd: u, cny: toDisplay(u, mode), requests: Number(req || 0) };
       total += u;
     }
     return {
       ok: true,
       byApp,
       totalUsd: total,
-      totalCny: toCny(total),
-      unit: '¥',
+      totalCny: toDisplay(total, mode),
+      unit: unitOf(mode),
+      mode,
     };
   } catch (err) {
     const msg = String((err && err.message) || err);
@@ -163,9 +203,10 @@ function readTodayCost() {
  * 今日某个 provider 的金额（用于圆环）。
  *
  * @param {string|null} providerId CC Switch 的 provider_id；传 null 取全部
+ * @param {'internal'|'real'|'raw'} [mode] 计价模式，默认 internal
  */
-function readTodayCostBy(providerId) {
-  const all = readTodayCost();
+function readTodayCostBy(providerId, mode = COST_MODE.INTERNAL) {
+  const all = readTodayCost(mode);
   if (!providerId) {
     return {
       ...all,
@@ -191,7 +232,14 @@ function readTodayCostBy(providerId) {
     const rows = query(sql);
     const [req, usd] = rows[0] || [0, 0];
     const u = Number(usd || 0);
-    return { ok: true, usd: u, cny: toCny(u), requests: Number(req || 0), unit: '¥' };
+    return {
+      ok: true,
+      usd: u,
+      cny: toDisplay(u, mode),
+      requests: Number(req || 0),
+      unit: unitOf(mode),
+      mode,
+    };
   } catch (err) {
     const msg = String((err && err.message) || err);
     return degrade(/locked/i.test(msg) ? 'CC Switch 正在写入，稍后自动恢复' : msg);
@@ -249,5 +297,9 @@ module.exports = {
   readTodayCostBy,
   listProviders,
   toCny,
+  toDisplay,
+  unitOf,
+  COST_MODE,
   USD_TO_CNY,
+  REAL_FX_RATE,
 };

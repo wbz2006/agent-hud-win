@@ -1,0 +1,69 @@
+feat: 图标改简约风 + 新增「金额计价」设置（仅取这两项，README 定位那套不要）
+
+一、图标改为简约风
+
+- 深色圆角底 + 三个等距实心环（绿 / 橙 / 蓝，与悬浮条状态色一致）
+- 去掉渐变、内描边、进度弧缺口 —— 这些细节在 16px 下会糊成一团
+- 修复上一版两个真 bug：
+  * 四角不透明（实测 alpha=255 纯白）：Electron capturePage 会把透明区
+    渲染成白底，不能靠"透明 PNG"解决。新增圆角遮罩，逐像素把圆角外
+    alpha 归零，7 个尺寸全部通过
+  * 三个环圆心算错（-56 / 256 / 568）：左右两个环圆心跑到 512 画布外，
+    图标里实际只剩中间一个环。改为按间距公式计算（101 / 256 / 411）
+- 新增 tools/gen-icon.js（生成 SVG）与 tools/render-icon.js（渲染 PNG+ICO）
+- 图标资产与两个脚本一并入库
+
+二、新增设置项「金额计价」（costMode）
+
+CC Switch 库里的 total_cost_usd 名义是美元，但它界面按 1 美元 = 5 元折算显示。
+提供三种模式，让用户按自己中转站的实际计价方式选：
+
+- internal（默认）÷5，与 CC Switch 界面数字一致
+- real     ×7.2 真实汇率，适合按真实美元结算的中转站
+- raw      不换算，原样显示库里的值（标 $）
+
+改动落在：
+- config.js          新增 costMode 默认值 internal
+- ccswitch.js        新增 COST_MODE / toDisplay / unitOf，readTodayCost 与
+                     readTodayCostBy 接受 mode 参数并返回 unit / mode
+- settings.html      新增「金额计价」小节下拉框
+- settings.js        填充与读取 costMode
+- worker.js          把 cfg.costMode 传给 readTodayCost
+- main.js            pushData 时把最新 config 一起发给 worker
+
+三、修复三个相互叠加的隐蔽 bug（设置页改动不生效）
+
+排查过程发现三层问题叠在一起，每一层单独看都不像 Bug：
+
+1. TDZ：readTodayCost(cfg.costMode) 写在 const cfg 声明之前，
+   抛 Cannot access cfg before initialization，被 try/catch 吞掉，
+   花费数据静默变成 ok:false
+2. 签名不匹配：调用处写 runOnce(msg.config)，函数签名却还是 runOnce()，
+   参数被丢弃，cfg 恒为 undefined
+3. 形参遮蔽：函数体内又写了 const cfg = config.load()，把形参盖掉；
+   而 config.load() 有模块级缓存，worker 进程内只读一次文件，
+   于是设置页保存的新值在 worker 里永远看不到
+
+三者叠加的结果：UI 显示已保存、config.json 也写对了，但运行时纹丝不动。
+
+四、新增 test/worker-tdz.test.js（6 项）
+
+- runOnce 必须接收 cfg 形参
+- 函数体内不得再用 const/let cfg 遮蔽形参（在剥注释后的代码上判定 ——
+  源码注释里就写着"不要再写 const cfg"这句说明，不剥注释会把说明文字
+  误判成真实声明，排查时被骗过一次）
+- readTodayCost 必须传入 cfg.costMode
+- todayCost 读取被 try/catch 包裹
+- 配置获取有兜底（msg.config || config.load()）
+- 自检：证明遮蔽检测真的有效，不是永远通过的假测试
+
+五、验证
+
+- 单元：23 项全 PASS
+- 计价换算：4.2342 → internal 0.8468 / real 30.4862 / raw 4.2342，8 断言全 PASS
+- 图标：7 尺寸四角 alpha 全为 0；扫描确认 3 个环、颜色 绿/橙/蓝、均在画布内
+- 端到端（打包+签名后，经设置页真实路径切换）：
+    real     → mode=real     unit=¥ totalCny=83.7121  (11.63 × 7.2)
+    raw      → mode=raw      unit=$ totalCny=11.6267  (原值)
+    internal → mode=internal unit=¥ totalCny=2.3253   (11.63 ÷ 5)
+  三种模式全部 PASS，单位符号正确

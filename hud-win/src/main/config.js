@@ -98,6 +98,14 @@ const DEFAULTS = {
   /** 各数据源开关。 */
   enabledSources: { claude: true, codex: true, dsh: true },
   /**
+   * 中转站（CC Switch）金额的计价方式：
+   *   'internal' 默认，÷5，与 CC Switch 界面显示的数字一致
+   *   'real'     按真实汇率 ¥7.2/$ 折算
+   *   'raw'      不换算，直接显示库里的原始值（标 $）
+   * 详见 sources/ccswitch.js 的 COST_MODE 注释。
+   */
+  costMode: 'internal',
+  /**
    * 中转站余额（Codex 走中转站时官方额度接口拿不到，改用中转站自己的余额接口）。
    * baseUrl/quotaPath/token/cookie 任一为空 → 不显示余额环；
    * 绝不拿估算值冒充实测余额。

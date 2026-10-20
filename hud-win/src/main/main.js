@@ -645,7 +645,17 @@ function startWorker() {
 function pushData() {
   if (!worker || collecting) return;
   collecting = true;
-  worker.postMessage({ type: 'collect' });
+  /*
+   * 必须把当前配置一起发给 worker。
+   *
+   * worker 的 runOnce(cfg) 用的是 msg.config，不带就是 undefined ——
+   * 于是 cfg.costMode / cfg.rateEnabled / cfg.enabledSources 全部取不到值，
+   * 设置里的改动（如「金额计价」切到 real）要等下一次才生效，甚至完全不生效。
+   *
+   * 以前设置页保存后会 config.save() 再触发采集，但保存的是主进程的 config，
+   * 而 worker 里的 costMode 需要显式传进来。这里统一在触发时带上最新配置。
+   */
+  worker.postMessage({ type: 'collect', config: config.load() });
 }
 
 app.whenReady().then(() => {

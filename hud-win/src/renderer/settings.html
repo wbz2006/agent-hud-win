@@ -124,6 +124,26 @@
         </div>
       </section>
 
+      <!-- 金额计价 -->
+      <section class="sect">
+        <h2>金额计价</h2>
+        <div class="row">
+          <span class="k">中转站金额换算</span>
+          <select id="costMode">
+            <option value="internal">跟 CC Switch 一致（÷5，默认）</option>
+            <option value="real">按真实汇率（¥7.2 = $1）</option>
+            <option value="raw">不换算，显示原始值（$）</option>
+          </select>
+        </div>
+        <p class="hint">
+          CC Switch 库里存的 <code>total_cost_usd</code> 名义是美元，
+          但它界面上是按 <strong>1 美元 = 5 元</strong> 折算显示的。
+          默认选项保证你看到的数字和 CC Switch 里完全一致；
+          如果你的中转站按真实美元结算，选「按真实汇率」才是你实际花掉的人民币。
+          选「不换算」则原样显示库里的值（标 <code>$</code>）。
+        </p>
+      </section>
+
       <!-- 监控范围 -->
       <section class="sect">
         <h2>监控数据源</h2>

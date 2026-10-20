@@ -41,6 +41,8 @@ function fill(cfg) {
   $('interval').value = String(current.collectIntervalMs || 30000);
   $('dock').value = current.dock || 'top';
   $('ringMode').value = current.ringMode || 'auto';
+  // 金额计价方式（默认 internal：与 CC Switch 界面显示一致）
+  $('costMode').value = current.costMode || 'internal';
   // 今日预算（圆环分母），空值显示占位提示
   $('dailyBudget').value =
     current.dailyBudgetCny != null && current.dailyBudgetCny > 0 ? String(current.dailyBudgetCny) : '';
@@ -88,6 +90,8 @@ function read() {
     collectIntervalMs: Number($('interval').value) || 30000,
     dock: $('dock').value,
     ringMode: $('ringMode').value,
+    // 金额计价方式：internal / real / raw
+    costMode: $('costMode').value,
     // 预算：留空/0 表示禁用比例弧，存 0
     dailyBudgetCny: (() => {
       const n = Number($('dailyBudget').value);
