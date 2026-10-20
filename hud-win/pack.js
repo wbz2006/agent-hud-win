@@ -29,9 +29,23 @@ const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
   const mod = await import('@electron/packager');
   const packager = mod.packager || mod.default || mod;
 
+  /*
+   * 输出目录：默认 build/，可用环境变量 HUD_OUT 覆盖。
+   *
+   * 为什么留这个开关：Windows 上旧产物偶尔会被残留句柄锁住
+   * （EBUSY: unlink app.asar 失败），此时换一个目录就能立刻打包，
+   * 不必去猜是哪个进程占着（实测逐个删文件也只能定位到 asar 本体，
+   * 而 tasklist/Get-Process 里已看不到任何相关进程）。
+   *
+   *   $env:HUD_OUT = "build2"; node pack.js
+   */
+  const outDir = process.env.HUD_OUT
+    ? path.resolve(ROOT, process.env.HUD_OUT)
+    : path.join(ROOT, 'build');
+
   const outPath = await packager({
     dir: ROOT,
-    out: path.join(ROOT, 'build'),
+    out: outDir,
     overwrite: true,
     platform: 'win32',
     arch: 'x64',
@@ -56,6 +70,9 @@ const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
     ignore: [
       /^[/\\]dist[/\\]/,
       /^[/\\]build[/\\]/,
+      // 用 HUD_OUT 换目录时，也要把该目录本身排除在打包内容之外，
+      // 否则会把上一次的产物打进 asar（体积翻倍且可能导致递归复制）
+      new RegExp(`^[/\\\\]${path.basename(outDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[/\\\\]`),
       /^[/\\]shot-.*\.png$/,
       /^[/\\]_.*\.(js|ps1|py)$/,
       /^[/\\]anim[/\\]/,

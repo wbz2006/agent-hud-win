@@ -1,0 +1,42 @@
+refactor: 设置页「中转站余额」与「监控数据源」对调 + 打包支持备用输出目录
+
+一、设置页顺序调整（用户指定）
+
+原顺序里「监控数据源」在第 3、「Codex 中转站余额」在第 5，对调后：
+
+  1 常规
+  2 悬浮条圆环
+  3 Codex 中转站余额      ← 原第 5
+  4 采集
+  5 监控数据源            ← 原第 3
+  6 金额计价
+  7 Beta 限流监控
+
+理由：中转站余额是 Codex 用户上手就要填的配置，放在数据源开关之前更顺手；
+数据源开关属于偶尔调整的项。
+
+同步更新了 settings.html 顶部的排列说明注释。
+
+验证：
+- 静态：10 项顺序断言全 PASS，25 个控件 id 无丢失
+- 运行时（打包后实测 exe）：小节顺序与预期一致，5 项断言全 PASS
+
+二、pack.js 支持 HUD_OUT 环境变量指定输出目录
+
+排查中发现 build/ 里的 app.asar 被残留句柄锁住（EBUSY: unlink 失败），
+逐个删文件只能定位到 asar 本体，而 Get-Process / Get-CimInstance 里
+已经看不到任何相关进程 —— 典型的 Windows 句柄延迟释放。
+
+与其继续猜是哪个进程，不如留一个开关：
+
+  $env:HUD_OUT = "build2"; node pack.js
+
+配套改动：
+- ignore 规则动态排除当前输出目录（否则会把上次产物打进 asar）
+- .gitignore 增加 build2/
+
+三、顺带修复
+
+.gitignore 用 PowerShell Add-Content 追加中文注释时被写坏（GBK/UTF-8
+混淆，出现乱码），改用 Node fs 重写修复并验证无乱码 ——
+这是记过的老坑，改含中文的文件必须用 write/edit 工具或 Node。

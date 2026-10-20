@@ -21,9 +21,9 @@
 
         1  常规          —— 开机自启 / 热键 / 停靠 / 预算，几乎每天会碰
         2  悬浮条圆环     —— 决定圆环显示什么，观感相关，改完立刻可见
-        3  监控数据源     —— 开关某个 agent，偶尔会动
-        4  采集间隔       —— 调过一轮就不再动
-        5  中转站余额     —— 一次性配置（填完基本不动），且涉及凭据
+        3  中转站余额     —— Codex 用户要用就得先填，放在数据源之前
+        4  采集          —— 调过一轮就不再动
+        5  监控数据源     —— 开关某个 agent，偶尔会动
         6  金额计价       —— 需要理解 CC Switch 的折算逻辑才会去改
         7  Beta 限流监控  —— 实验性功能，默认关闭，放最后
 
@@ -96,32 +96,7 @@
         </p>
       </section>
 
-      <!-- 3. 监控数据源 -->
-      <section class="sect">
-        <h2>监控数据源</h2>
-        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
-        <div id="sourceList" class="sources"></div>
-      </section>
-
-      <!-- 4. 采集间隔 -->
-      <section class="sect">
-        <h2>采集</h2>
-        <div class="row">
-          <span class="k">采集间隔</span>
-          <select id="interval">
-            <option value="10000">10 秒</option>
-            <option value="30000">30 秒</option>
-            <option value="60000">1 分钟</option>
-            <option value="300000">5 分钟</option>
-          </select>
-        </div>
-        <p class="hint">
-          间隔越短数字越新鲜，但读取会话文件与 CC Switch 账本的 CPU 占用也越高。
-          10 秒适合盯着看的时候，平时 30 秒 ~ 1 分钟就够。
-        </p>
-      </section>
-
-      <!-- 5. 中转站余额（一次性配置，且涉及凭据，放中后段） -->
+      <!-- 3. 中转站余额（一次性配置，且涉及凭据） -->
       <section class="sect">
         <h2>Codex 中转站余额</h2>
         <p class="hint">
@@ -154,6 +129,31 @@
         <div class="btns" style="margin-top:6px">
           <button class="btn" id="relayTestBtn">测试连接</button>
         </div>
+      </section>
+
+      <!-- 4. 采集间隔 -->
+      <section class="sect">
+        <h2>采集</h2>
+        <div class="row">
+          <span class="k">采集间隔</span>
+          <select id="interval">
+            <option value="10000">10 秒</option>
+            <option value="30000">30 秒</option>
+            <option value="60000">1 分钟</option>
+            <option value="300000">5 分钟</option>
+          </select>
+        </div>
+        <p class="hint">
+          间隔越短数字越新鲜，但读取会话文件与 CC Switch 账本的 CPU 占用也越高。
+          10 秒适合盯着看的时候，平时 30 秒 ~ 1 分钟就够。
+        </p>
+      </section>
+
+      <!-- 5. 监控数据源 -->
+      <section class="sect">
+        <h2>监控数据源</h2>
+        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
+        <div id="sourceList" class="sources"></div>
       </section>
 
       <!-- 6. 金额计价（需要理解折算逻辑才会改，靠后） -->
