@@ -11,27 +11,28 @@
  *                      cache_creation_tokens, input_cost_usd, output_cost_usd,
  *                      total_cost_usd, status_code, created_at, ...)
  *
- * 实测（2026-10-17）：
- *   - 2923 条记录，最新到 2026-10-16 10:40
- *   - provider_id = '_codex_session' 的 1694 条合计 $180.26 —— 走中转站的 Codex 会话
- *   - CC Switch 自己按 model_pricing 表（222 条）算好了金额，**不需要我们再算**
- *   - created_at 是 Unix 秒
- *
  * 为什么用它而不用本地 token 估算：中转站计费规则不公开（倍率按渠道变化），
  * CC Switch 是用户自己实际付费的账本，金额是真实值而非估算。
  *
- * 读法上有个坑：数据库正被 CC Switch 进程占用，必须**只读打开**并设
- * immutable，否则会拿到 "database is locked"。这里用 file: URI + mode=ro。
+ * ## 对 CC Switch 的依赖与降级
+ *
+ * 这个模块对 CC Switch 是强依赖，而 CC Switch 升级时表名/字段名都可能变。
+ * 为免每次都要改代码重新发布，这里分三层：
+ *
+ *   1. **自动探测**（ccdb.js）：找数据库、找表名、找字段名，全部按候选列表
+ *      匹配而非写死。它改文件名、加后缀、挪目录都能自适应。
+ *   2. **优雅降级**（本文件）：探测失败时**不抛错**，返回 { ok: false,
+ *      reason: '...' }，上层据此把"今日花费"显示成"—"并附原因，
+ *      其余数据（token / 会话 / 限流）照常工作。
+ *   3. **缓存**（ccdb.js）：探测结果 60s TTL，不给热路径加 schema 查询开销。
+ *
+ * 读法上还有个坑：数据库正被 CC Switch 进程占用，必须**只读打开**并设
+ * query_only，否则会拿到 "database is locked"。
  */
 
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-
-const HOME = os.homedir();
-const CC_DIR = path.join(HOME, '.cc-switch');
-const DB = path.join(CC_DIR, 'cc-switch.db');
+const ccdb = require('./ccdb');
 
 /**
  * CC Switch 内部的人民币折算率。
@@ -54,102 +55,146 @@ function toCny(usd) {
 }
 
 /**
+ * 探测失败时的统一返回。
+ *
+ * 关键：**不抛异常**。调用方（worker）本来用 try/catch 包着，抛出去会让
+ * 整个采集失败 → 红框 → 用户以为 HUD 坏了。返回结构化失败让上层
+ * 只把"花费"这一栏降级。
+ */
+function degrade(reason) {
+  return {
+    ok: false,
+    reason,
+    byApp: {},
+    totalUsd: null,
+    totalCny: null,
+  };
+}
+
+/**
+ * 在探测到的 schema 上跑一段只读 SQL，返回解析后的 JSON。
+ *
+ * @param {string} sql SQL 语句
+ * @param {number} timeout 毫秒
+ */
+function query(sql, timeout = 6000) {
+  // 用 Python 的 sqlite3 读：Node 内置没有 sqlite 模块，而引入 better-sqlite3
+  // 会多一个原生依赖（本机打包要走镜像，依赖越少越稳）。
+  const script = `
+import sqlite3, json
+c = sqlite3.connect(${JSON.stringify(ccdb.probe().db)}, uri=False)
+c.execute("PRAGMA query_only = ON")
+rows = c.execute(${JSON.stringify(sql)}).fetchall()
+print(json.dumps(rows, ensure_ascii=False))
+`;
+  const stdout = execFileSync('python', ['-c', script], {
+    encoding: 'utf8',
+    timeout,
+    windowsHide: true,
+  });
+  return JSON.parse(stdout.trim() || '[]');
+}
+
+/** 探测失败时把原因翻译成用户能看懂的话。 */
+function failReason() {
+  const e = ccdb.lastError();
+  if (!e) return 'CC Switch 数据不可用';
+  if (/locked/i.test(e)) return 'CC Switch 正在写入，稍后自动恢复';
+  if (/未找到/.test(e)) return '未检测到 CC Switch 账本';
+  return e;
+}
+
+/**
  * 今日（本地时区）各 app_type 的金额与请求数。
- * @returns {{ok:boolean, byApp?:object, totalUsd?:number, totalCny?:number, error?:string}}
+ *
+ * @returns {{ok:boolean, byApp?:object, totalUsd?:number, totalCny?:number,
+ *            unit?:string, reason?:string}}
  *   byApp: { codex: { usd, cny, requests }, claude: {...}, ... }
- *   界面显示用 cny（人民币）；usd 保留以备核对原始值。
+ *   reason 仅在 ok=false 时出现，说明为什么没有数据（供 UI 展示）。
  */
 function readTodayCost() {
-  if (!fs.existsSync(DB)) {
-    return { ok: false, error: '未找到 CC Switch 数据库：' + DB };
-  }
+  const s = ccdb.probe();
+  if (!s.ok) return degrade(failReason());
+
+  // 没有 app_type 列时，退化到"只统计总数"—— 比完全失败好
+  const hasApp = !!s.appType;
+  const hasCreated = !!s.createdAt;
 
   // SQLite 的 date(created_at,'unixepoch','localtime') 会用系统本地时区换算，
-  // 与"今日"的直觉一致。
+  // 与"今日"的直觉一致。字段不存在时退化为全量统计（宁可少一个筛选，
+  // 也不要因为缺一列就整块失败）。
+  const where = hasCreated
+    ? `WHERE date(${s.createdAt}, 'unixepoch', 'localtime') = date('now', 'localtime')`
+    : '';
+  const selectApp = hasApp ? s.appType : 'NULL';
   const sql = `
-    SELECT app_type,
-           SUM(request_count) AS req,
-           SUM(CAST(total_cost_usd AS REAL)) AS usd
-    FROM (
-      SELECT app_type, 1 AS request_count, total_cost_usd
-      FROM proxy_request_logs
-      WHERE date(created_at, 'unixepoch', 'localtime') = date('now', 'localtime')
-    )
-    GROUP BY app_type
+    SELECT ${selectApp} AS app,
+           COUNT(*) AS req,
+           SUM(CAST(${s.cost} AS REAL)) AS usd
+    FROM ${s.logTable}
+    ${where}
+    GROUP BY app
   `;
 
   try {
-    // 用 Python 的 sqlite3 读：Node 内置没有 sqlite 模块，而引入 better-sqlite3
-    // 会多一个原生依赖（本机打包要走镜像，依赖越少越稳）。
-    // 只读模式打开，避免与 CC Switch 抢锁。
-    const script = `
-import sqlite3, json, sys
-c = sqlite3.connect(${JSON.stringify(DB)}, uri=False)
-c.execute("PRAGMA query_only = ON")
-rows = c.execute(${JSON.stringify(sql)}).fetchall()
-out = {}
-for app_type, req, usd in rows:
-    out[app_type] = {"requests": int(req or 0), "usd": float(usd or 0.0)}
-print(json.dumps(out))
-`;
-    const stdout = execFileSync('python', ['-c', script], {
-      encoding: 'utf8',
-      timeout: 6000,
-      windowsHide: true,
-    });
-    const byApp = JSON.parse(stdout.trim() || '{}');
+    const rows = query(sql);
+    const byApp = {};
     let total = 0;
-    for (const v of Object.values(byApp)) {
-      v.cny = toCny(v.usd);
-      total += v.usd;
+    for (const [app, req, usd] of rows) {
+      const u = Number(usd || 0);
+      const key = app == null ? '_all' : String(app);
+      byApp[key] = { usd: u, cny: toCny(u), requests: Number(req || 0) };
+      total += u;
     }
-    return { ok: true, byApp, totalUsd: total, totalCny: toCny(total) };
+    return {
+      ok: true,
+      byApp,
+      totalUsd: total,
+      totalCny: toCny(total),
+      unit: '¥',
+    };
   } catch (err) {
     const msg = String((err && err.message) || err);
-    return {
-      ok: false,
-      // 常见：CC Switch 正在写库（database is locked）/ 没装 python
-      error: /locked/i.test(msg) ? 'CC Switch 数据库被占用' : msg,
-    };
+    return degrade(/locked/i.test(msg) ? 'CC Switch 正在写入，稍后自动恢复' : msg);
   }
 }
 
 /**
  * 今日某个 provider 的金额（用于圆环）。
- * @param {string} providerId CC Switch 的 provider_id；传 null 取全部
+ *
+ * @param {string|null} providerId CC Switch 的 provider_id；传 null 取全部
  */
 function readTodayCostBy(providerId) {
+  const all = readTodayCost();
   if (!providerId) {
-    const all = readTodayCost();
-    return { ...all, usd: all.ok ? all.totalUsd : null, cny: all.ok ? all.totalCny : null };
+    return {
+      ...all,
+      usd: all.ok ? all.totalUsd : null,
+      cny: all.ok ? all.totalCny : null,
+    };
   }
 
-  if (!fs.existsSync(DB)) {
-    return { ok: false, error: '未找到 CC Switch 数据库' };
-  }
+  const s = ccdb.probe();
+  if (!s.ok) return degrade(failReason());
+  if (!s.provider) return degrade('CC Switch 日志表缺少 provider 字段');
+
+  const where = s.createdAt
+    ? `AND date(${s.createdAt}, 'unixepoch', 'localtime') = date('now', 'localtime')`
+    : '';
   const sql = `
-    SELECT COUNT(*) AS req, SUM(CAST(total_cost_usd AS REAL)) AS usd
-    FROM proxy_request_logs
-    WHERE date(created_at, 'unixepoch', 'localtime') = date('now', 'localtime')
-      AND provider_id = ${JSON.stringify(providerId)}
+    SELECT COUNT(*) AS req, SUM(CAST(${s.cost} AS REAL)) AS usd
+    FROM ${s.logTable}
+    WHERE ${s.provider} = ${JSON.stringify(providerId)}
+    ${where}
   `;
   try {
-    const script = `
-import sqlite3, json
-c = sqlite3.connect(${JSON.stringify(DB)})
-c.execute("PRAGMA query_only = ON")
-r = c.execute(${JSON.stringify(sql)}).fetchone()
-print(json.dumps({"requests": int(r[0] or 0), "usd": float(r[1] or 0.0)}))
-`;
-    const stdout = execFileSync('python', ['-c', script], {
-      encoding: 'utf8',
-      timeout: 6000,
-      windowsHide: true,
-    });
-    const o = JSON.parse(stdout.trim());
-    return { ok: true, usd: o.usd, cny: toCny(o.usd), requests: o.requests };
+    const rows = query(sql);
+    const [req, usd] = rows[0] || [0, 0];
+    const u = Number(usd || 0);
+    return { ok: true, usd: u, cny: toCny(u), requests: Number(req || 0), unit: '¥' };
   } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) };
+    const msg = String((err && err.message) || err);
+    return degrade(/locked/i.test(msg) ? 'CC Switch 正在写入，稍后自动恢复' : msg);
   }
 }
 
@@ -158,37 +203,51 @@ print(json.dumps({"requests": int(r[0] or 0), "usd": float(r[1] or 0.0)}))
  * 只列有请求记录的，方便定位"哪个是中转站"。
  */
 function listProviders() {
-  if (!fs.existsSync(DB)) return { ok: false, error: '未找到 CC Switch 数据库' };
+  const s = ccdb.probe();
+  if (!s.ok) return { ok: false, error: failReason() };
+
+  // provider 表可能不存在（或改了名），此时退化为不 JOIN ——
+  // 拿不到友好名称就用 id 本身，不影响列表可用。
+  const join = s.providerTable && s.provider
+    ? `LEFT JOIN ${s.providerTable} p ON p.id = l.${s.provider}`
+    : '';
+  const nameCol = s.providerTable && s.provider
+    ? `COALESCE(p.name, l.${s.provider})`
+    : `l.${s.provider || 'rowid'}`;
+  const groupCol = s.provider || 'rowid';
+
   const sql = `
-    SELECT l.provider_id,
-           COALESCE(p.name, l.provider_id) AS name,
-           p.website_url,
-           COUNT(l.request_id) AS req,
-           SUM(CAST(l.total_cost_usd AS REAL)) AS usd
-    FROM proxy_request_logs l
-    LEFT JOIN providers p ON p.id = l.provider_id
-    GROUP BY l.provider_id
+    SELECT l.${groupCol} AS pid,
+           ${nameCol} AS name,
+           NULL AS url,
+           COUNT(*) AS req,
+           SUM(CAST(l.${s.cost} AS REAL)) AS usd
+    FROM ${s.logTable} l
+    ${join}
+    GROUP BY pid
     ORDER BY usd DESC
   `;
   try {
-    const script = `
-import sqlite3, json
-c = sqlite3.connect(${JSON.stringify(DB)})
-c.execute("PRAGMA query_only = ON")
-rows = c.execute(${JSON.stringify(sql)}).fetchall()
-out = [{"provider_id": r[0], "name": r[1], "url": r[2], "requests": int(r[3] or 0), "usd": float(r[4] or 0.0)} for r in rows]
-print(json.dumps(out, ensure_ascii=False))
-`;
-    const stdout = execFileSync('python', ['-c', script], {
-      encoding: 'utf8',
-      timeout: 8000,
-      windowsHide: true,
-    });
-    return { ok: true, providers: JSON.parse(stdout.trim() || '[]') };
+    const rows = query(sql, 8000);
+    return {
+      ok: true,
+      providers: rows.map((r) => ({
+        provider_id: r[0],
+        name: r[1] != null ? String(r[1]) : String(r[0]),
+        url: r[2],
+        requests: Number(r[3] || 0),
+        usd: Number(r[4] || 0),
+      })),
+    };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 }
 
-module.exports = { readTodayCost, readTodayCostBy, listProviders, DB };
-
+module.exports = {
+  readTodayCost,
+  readTodayCostBy,
+  listProviders,
+  toCny,
+  USD_TO_CNY,
+};

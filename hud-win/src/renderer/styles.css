@@ -696,3 +696,19 @@ body.vertical .glow { display: none; }
 .body::-webkit-scrollbar-button {
   display: none;
 }
+
+/* ---------- CC Switch 降级提示 ---------- */
+/*
+ * 「今日花费」来自 CC Switch 本地账本，它升级时表结构可能变。
+ * 探测失败时在模型列表上方显示这一行：用琥珀色（警示但不刺眼），
+ * 并明确告诉用户这是外部数据源的问题、其余数据不受影响 ——
+ * 避免用户以为 HUD 本身坏了。
+ */
+.panel-time .cost-degrade {
+  color: #e8b44a;
+}
+
+.panel-time .cost-degrade-sub {
+  color: rgba(255, 255, 255, 0.42);
+  margin-left: 6px;
+}

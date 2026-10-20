@@ -7,7 +7,8 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "pack": "node pack.js",
-    "dist": "node dist.js"
+    "dist": "node dist.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [
     "electron",

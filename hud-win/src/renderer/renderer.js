@@ -648,6 +648,20 @@ function renderAllGrid(summary) {
 
   const note = $('allModelsNote');
   if (note) {
+    /*
+     * CC Switch 降级提示。
+     *
+     * 花费数据来自 CC Switch 本地账本，它升级时表结构可能变。探测失败时
+     * 不该让整个面板崩，只在这一行说明"为什么没有花费"，其余数据照常显示。
+     * 提示语写清楚这是外部工具的问题、不是 HUD 坏了，避免用户误判。
+     */
+    const tc = summary.todayCost;
+    if (tc && tc.ok === false) {
+      note.innerHTML =
+        `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
+        `<span class="cost-degrade-sub">（来自 CC Switch 账本，其余数据不受影响）</span></span>`;
+      return;
+    }
     const active = rl.filter((r) => (r.windowCalls || 0) > 0).length;
     const limited = rl.filter((r) => r.limited).length;
     note.textContent = `${rl.length} 个模型 · ${active} 个 24h 内用过 · ${limited} 个限流中`;
