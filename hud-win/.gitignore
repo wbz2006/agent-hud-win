@@ -33,3 +33,4 @@ tools/signtool/
 # build 被残留句柄锁住（EBUSY）时的备选输出目录
 build2/
 build3/
+build4/

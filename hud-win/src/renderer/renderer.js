@@ -316,7 +316,22 @@ function renderTabs(summary) {
 
   const bySrc = summary.bySource || {};
   const tabs = [{ key: 'all', label: '全部', icon: null }];
-  for (const [key, s] of Object.entries(bySrc)) {
+
+  /*
+   * 顺序必须与胶囊里的圆环一致。
+   *
+   * 胶囊按 SOURCE_VENDOR 的键序渲染（codex → claude → dsh），
+   * 但 bySource 是采集层给的，键序是 claude → codex → dsh。
+   * 直接遍历 bySource 会让 Tab 顺序和上面的圆环对不上，
+   * 用户点的"第二个"和看到的"第二个环"是不同工具。
+   * 所以这里按 SOURCE_VENDOR 的键序来，再补上它没涵盖的源。
+   */
+  const ordered = [
+    ...Object.keys(SOURCE_VENDOR).filter((k) => bySrc[k]),
+    ...Object.keys(bySrc).filter((k) => !(k in SOURCE_VENDOR)),
+  ];
+  for (const key of ordered) {
+    const s = bySrc[key];
     if (!s || !s.ok) continue; // 采集失败的源不占位置
     tabs.push({ key, label: s.label || key, logo: SOURCE_VENDOR[key] && SOURCE_VENDOR[key].logo });
   }
@@ -607,8 +622,17 @@ function markHtml(r, opts) {
  * 环的状态取该源下所有模型里最"严重"的一个：
  *   任一模型限流 → 该源整体标红（用户用到它就会撞墙）
  */
+/*
+ * 数据源 → 品牌元信息。
+ *
+ * 这个对象的**键序就是胶囊里圆环的渲染顺序**（codex → claude → dsh），
+ * 面板 Tab 也沿用同一顺序（见 renderTabs），保证"第几个环"和"第几个 Tab"对应。
+ *
+ * Codex 用绿色版 logo（codex-green.png）：原版 chatgpt.png 是黑白的，
+ * 放在深色胶囊里几乎看不出是 Codex，而绿色正好对应它圆环的状态色。
+ */
 const SOURCE_VENDOR = {
-  codex: { vendor: 'codex', label: 'Codex', logo: 'chatgpt.png' },
+  codex: { vendor: 'codex', label: 'Codex', logo: 'codex-green.png' },
   claude: { vendor: 'claude', label: 'Claude Code', logo: 'claude.png' },
   dsh: { vendor: 'dsh', label: 'DeepSeek', logo: 'deepseek.png' },
 };

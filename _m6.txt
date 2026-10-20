@@ -1,0 +1,26 @@
+fix: Codex 图标换绿色 + Tab 顺序与胶囊圆环对齐
+
+一、Codex 图标改为绿色版
+
+原用 chatgpt.png（黑白 OpenAI logo），放在深色胶囊里几乎看不出是 Codex，
+而且与它的状态色（绿）不一致。
+
+- 新增 assets/codex-green.png：以原 logo 的形状为蒙版重新着色为 #10a37f，
+  保留抗锯齿边缘（用亮度作 alpha，深色部分实、浅色部分透）
+- SOURCE_VENDOR.codex.logo 改为 codex-green.png —— 胶囊环与面板 Tab 同时生效
+
+二、修一个真实的顺序错位 bug
+
+胶囊里的圆环按 SOURCE_VENDOR 的键序渲染：codex → claude → dsh
+但面板 Tab 之前用 Object.entries(bySource)，采集层给的键序是
+claude → codex → dsh。
+
+结果：用户点的"第二个 Tab"和看到的"第二个环"是不同工具。
+
+renderTabs 改为按 SOURCE_VENDOR 的键序排列（再补上它没涵盖的源），
+保证"第几个环"与"第几个 Tab"一一对应。
+
+验证（打包 + 签名后连真实 exe 实测）：
+  胶囊圆环：codex-green → claude → deepseek
+  Tab 顺序：codex-green → claude → deepseek
+  三项断言全 PASS（顺序一致 / Codex 换绿 / 胶囊环也换绿）
