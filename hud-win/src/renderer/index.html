@@ -69,15 +69,6 @@
       <div class="rates" id="rates"></div>
     </div>
 
-    <!-- 额度（积分）：只有 DSH 源有，切到别的 Tab 时隐藏 -->
-    <div id="quotaSection">
-      <div class="panel-head">
-        <span>额度（积分）</span>
-        <span class="panel-time" id="quotaNote"></span>
-      </div>
-      <div class="quotas" id="quotas"></div>
-    </div>
-
     <div class="panel-head">
       <span>模型用量</span>
       <span class="panel-time" id="panelTime"></span>
@@ -89,6 +80,20 @@
       <span class="panel-time" id="filterNote"></span>
     </div>
     <div class="sessions" id="sessions"></div>
+
+    <!--
+      额度（积分）—— 放在「最近会话」之后。
+      用户明确要求：积分余额、积分包明细、各 provider 的今日本地消耗
+      都属于"想细看才看"的次要信息，不该挤在首屏把模型用量和会话推下去。
+      只有 DSH 源有积分概念，切到别的 Tab 时整块隐藏。
+    -->
+    <div id="quotaSection">
+      <div class="panel-head">
+        <span>额度（积分）</span>
+        <span class="panel-time" id="quotaNote"></span>
+      </div>
+      <div class="quotas" id="quotas"></div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

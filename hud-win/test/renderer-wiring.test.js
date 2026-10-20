@@ -78,3 +78,25 @@ test('Tab 切换会重绘（click 后调用 render）', () => {
   assert.match(CODE, /addEventListener\(\s*'click'/, 'Tab 应有 click 监听');
   assert.match(CODE, /if\s*\(\s*currentSummary\s*\)\s*render\(/, '切换后应重绘');
 });
+
+test('面板区块顺序：额度区必须在最近会话之后', () => {
+  /*
+   * 用户明确要求：积分余额、积分包明细、各 provider 的今日本地消耗
+   * 都属于"想细看才看"的次要信息，不该挤在首屏把模型用量和会话推下去。
+   *
+   * 期望顺序：Tab → 概况 → 限流 → 模型用量 → 最近会话 → 额度
+   */
+  const indexHtml = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'index.html'),
+    'utf8'
+  );
+  const ids = [
+    ...indexHtml.matchAll(/id="(panelTabs|allModels|rateSection|quotaSection|bars|sessions)"/g),
+  ].map((m) => m[1]);
+
+  assert.deepEqual(
+    ids,
+    ['panelTabs', 'allModels', 'rateSection', 'bars', 'sessions', 'quotaSection'],
+    `区块顺序不对，实际是 ${ids.join(' → ')}`
+  );
+});
