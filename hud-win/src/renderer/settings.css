@@ -100,6 +100,28 @@ input[type="text"] {
 input[type="text"]:focus { outline: none; border-color: var(--accent); }
 input[type="text"]::placeholder { color: var(--text-dim); font-family: inherit; }
 
+/* ---------- 热键录制态 ---------- */
+/*
+ * 录制中：边框用强调色 + 轻微发光 + 背景提亮，让"正在等你按键"一眼可见。
+ * 不用闪烁动画（会分散注意力），只靠静态高亮。
+ */
+.hotkey-input {
+  cursor: pointer;
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  letter-spacing: 0.3px;
+}
+
+.hotkey-input.recording {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  cursor: text;
+}
+
+.hint.recording {
+  color: var(--accent);
+}
+
 /*
  * 数字输入（今日预算等）—— 必须显式写全。
  * 漏了这条时浏览器给 input[type=number] 用**白色默认背景**，

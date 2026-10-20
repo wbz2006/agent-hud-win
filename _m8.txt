@@ -1,0 +1,38 @@
+feat: 热键输入框改为按键录制（单击开始 / Esc 取消）
+
+原来是个普通文本框，要手打 "Control+Shift+H" 这种精确格式：
+容易写成 Ctrl+H、ctrl+shift+h 等变体，而且一边打一边可能触发别的快捷键。
+
+改为录制式输入：
+
+- 输入框设为 readonly（不能手打）
+- **左键单击** → 进入录制态：清空 + 边框高亮发光 + 提示"请按组合键…（Esc 取消）"
+- **按下任意组合键** → 捕获、转成 Electron accelerator 格式、自动退出录制
+- **按 Esc** → 取消录制，恢复原值
+- 失焦 → 视同取消（避免录到一半点别处留下半截状态）
+- Tab 聚焦后按 Enter 也能开始录制（键盘可达）
+
+格式转换（keyEventToAccelerator）：
+- 修饰键固定输出顺序 Control → Alt → Shift → Super。
+  顺序必须稳定，否则同一组合实际会产出 "Shift+Control+H" 与
+  "Control+Shift+H" 两种字符串，Electron 当成两个不同热键。
+- 主键用 e.code（物理键位）而非 e.key，避免中文输入法 / 大写锁定
+  导致 "Control+Process" 这类错误结果
+- 只按修饰键时不产出半截热键，继续等待
+- 特殊键按 Electron 命名映射：Space / Return / Up / Down / numN 等
+
+顺带修一处冲突：Ctrl+S 快捷保存原本会拦截所有 keydown，
+想设 Ctrl+S 为热键时会直接存盘。现在录制态下跳过保存处理。
+
+改动：settings.html（readonly + 提示行）、settings.js（录制器)、
+settings.css（录制态高亮）。
+
+验证：
+- 单测 12 项全 PASS（Ctrl+Shift+H 格式、Win→Super 及顺序稳定、
+  纯修饰键返回 null、无修饰键返回 null、F 键、e.code 优于 e.key、
+  特殊键映射、小键盘、readonly、录制器已安装）
+- 端到端（打包+签名后连真实 exe，用 CDP 发真实按键）：
+    初始 Control+Shift+H 非录制态 → 单击进入录制（清空）
+    → 按 Ctrl+Alt+K 捕获为 Control+Alt+K 并自动退出
+    → 再单击后按 Esc 退出录制并恢复原值
+  全部 PASS

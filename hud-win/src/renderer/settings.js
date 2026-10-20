@@ -155,6 +155,200 @@ async function testRelay() {
   }
 }
 
+/**
+ * 热键录制。
+ *
+ * 为什么不让人手打：Electron 的 accelerator 必须是 `Control+Shift+H`
+ * 这种精确格式，手打容易写成 Ctrl+H、ctrl+shift+h 之类的变体；
+ * 而且用户可能一边打一边触发别的快捷键。
+ *
+ * 交互：
+ *   单击输入框 → 进入录制态（清空 + 高亮 + 提示"请按组合键"）
+ *   按下组合键 → 捕获、格式化、退出录制态
+ *   按 Esc     → 取消录制，恢复原值
+ *   失焦       → 视同取消（避免"录着录着点别处"留下半截状态）
+ *
+ * 格式转换：浏览器的 event.ctrlKey / keyCode 与 Electron accelerator
+ * 的命名不完全一致，这里做一层映射，只输出 Electron 认得的名字。
+ */
+/*
+ * 修饰键的输出顺序固定为 Control → Alt → Shift → Super。
+ *
+ * 顺序必须稳定，否则同一组合键可能生成 "Shift+Control+H" 和
+ * "Control+Shift+H" 两种字符串，Electron 会当成两个不同的热键。
+ * 这个次序也是 Electron accelerator 文档里的惯例写法。
+ */
+const HOTKEY_MODIFIERS = [
+  ['ctrlKey', 'Control'],
+  ['altKey', 'Alt'],
+  ['shiftKey', 'Shift'],
+  ['metaKey', 'Super'],
+];
+
+/**
+ * 把一次 keydown 事件转成 Electron accelerator 字符串。
+ * @returns {string|null} 不是有效组合时返回 null
+ */
+function keyEventToAccelerator(e) {
+  // 只按住修饰键本身时不产生完整组合
+  const bare = ['Control', 'Shift', 'Alt', 'Meta'];
+  if (bare.includes(e.key)) return null;
+
+  const parts = [];
+  for (const [prop, name] of HOTKEY_MODIFIERS) {
+    if (e[prop]) parts.push(name);
+  }
+  // 没有修饰键的热键容易与普通输入冲突，且 Electron 也基本不推荐
+  if (!parts.length) return null;
+
+  // 主键：优先用 e.code（物理键位，不受输入法/大小写影响）
+  const key = normalizeMainKey(e);
+  if (!key) return null;
+  parts.push(key);
+  return parts.join('+');
+}
+
+/** 把主键规范成 Electron 的名字。 */
+function normalizeMainKey(e) {
+  const code = e.code || '';
+  const key = e.key || '';
+
+  // 字母：KeyA → A
+  let m = /^Key([A-Z])$/.exec(code);
+  if (m) return m[1];
+  // 数字：Digit1 → 1
+  m = /^Digit(\d)$/.exec(code);
+  if (m) return m[1];
+  // 小键盘：Numpad1 → num1
+  m = /^Numpad(\d)$/.exec(code);
+  if (m) return 'num' + m[1];
+  // 功能键：F1..F24 原样
+  m = /^(F\d{1,2})$/.exec(code);
+  if (m) return m[1];
+
+  // 特殊键映射（Electron accelerator 的命名）
+  const SPECIAL = {
+    Space: 'Space',
+    Enter: 'Return',
+    NumpadEnter: 'Enter',
+    Tab: 'Tab',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    Insert: 'Insert',
+    Home: 'Home',
+    End: 'End',
+    PageUp: 'PageUp',
+    PageDown: 'PageDown',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    Minus: '-',
+    Equal: '=',
+    BracketLeft: '[',
+    BracketRight: ']',
+    Backslash: '\\',
+    Semicolon: ';',
+    Quote: "'",
+    Comma: ',',
+    Period: '.',
+    Slash: '/',
+    Backquote: '`',
+  };
+  if (SPECIAL[code]) return SPECIAL[code];
+
+  // 兜底：单个可打印字符直接用（大写化，保持稳定）
+  if (key.length === 1) return key.toUpperCase();
+  return null;
+}
+
+/** 安装热键录制行为。在 DOM 就绪后调用一次。 */
+function setupHotkeyRecorder() {
+  const input = $('toggleHotkey');
+  const hint = $('hotkeyHint');
+  if (!input) return;
+
+  let recording = false;
+  let before = '';
+
+  const enter = () => {
+    if (recording) return;
+    recording = true;
+    before = input.value;
+    input.value = '';
+    input.classList.add('recording');
+    input.placeholder = '请按组合键…（Esc 取消）';
+    if (hint) {
+      hint.textContent = '正在录制：直接按下组合键即可，例如 Ctrl+Alt+H。按 Esc 取消。';
+      hint.className = 'hint recording';
+    }
+  };
+
+  const exit = (restore) => {
+    if (!recording) return;
+    recording = false;
+    input.classList.remove('recording');
+    input.placeholder = '单击后按组合键';
+    if (restore) input.value = before;
+    if (hint) {
+      hint.textContent = '单击右侧输入框，然后直接按下你要用的组合键（如 Ctrl+Alt+H）；按 Esc 取消。';
+      hint.className = 'hint';
+    }
+  };
+
+  // 单击开始录制
+  input.addEventListener('mousedown', (e) => {
+    e.preventDefault(); // 阻止默认的文本选中/聚焦行为
+    enter();
+    input.focus();
+  });
+  // 键盘可达性：Tab 聚焦后按 Enter 也能开始
+  input.addEventListener('keydown', (e) => {
+    if (!recording) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        enter();
+      }
+      return;
+    }
+
+    // Esc 取消
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      exit(true);
+      return;
+    }
+
+    // 什么都不按（只按修饰键）时先等，不退出录制
+    const acc = keyEventToAccelerator(e);
+    if (!acc) {
+      // 纯修饰键：阻止默认行为，但不结束录制
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+        e.preventDefault();
+      }
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    input.value = acc;
+    exit(false);
+    if (hint) {
+      hint.textContent = `已录制：${acc}（点「保存」后生效）`;
+      hint.className = 'hint ok';
+    }
+  });
+
+  // 失焦视同取消，避免留下半截状态
+  input.addEventListener('blur', () => exit(true));
+
+  // 阻止在录制态下输入字符（input 本身是 readonly，这里再兜一层）
+  input.addEventListener('keypress', (e) => {
+    if (recording) e.preventDefault();
+  });
+}
+
 /** 展示热键注册状态（被其他程序占用时明确告知，避免"按了没反应"）。 */
 function showHotkeyStatus(status) {
   const el = $('hotkeyStatus');
@@ -211,8 +405,13 @@ $('cancelBtn').addEventListener('click', () => window.close());
 $('closeBtn').addEventListener('click', () => window.close());
 $('relayTestBtn').addEventListener('click', testRelay);
 
+// 热键录制（单击输入框 → 按组合键 → Esc 取消）
+setupHotkeyRecorder();
+
 // Ctrl/Cmd + S 快捷保存
 document.addEventListener('keydown', (e) => {
+  // 录制热键时不要触发保存 —— 否则想设 Ctrl+S 为热键会直接存盘
+  if (document.activeElement && document.activeElement.id === 'toggleHotkey') return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault();
     save();

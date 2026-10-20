@@ -40,10 +40,19 @@
           <input type="checkbox" id="autostart" />
         </label>
 
+        <!--
+          热键：不是文本输入，而是**按键录制**。
+          单击进入录制态（边框高亮 + 提示"请按组合键"），
+          按下任意组合键即捕获并退出；按 Esc 取消录制、恢复原值。
+          不能直接键入字母 —— 那会和真正的快捷键触发冲突，
+          也容易拼错格式（必须写成 Control+Shift+H 这种 Electron 格式）。
+        -->
         <div class="row">
           <span class="k">显示 / 隐藏 热键</span>
-          <input type="text" id="toggleHotkey" placeholder="如 Ctrl+Alt+H" />
+          <input type="text" id="toggleHotkey" class="hotkey-input" readonly
+                 placeholder="单击后按组合键" title="单击开始录制，按 Esc 取消" />
         </div>
+        <div class="hint" id="hotkeyHint">单击右侧输入框，然后直接按下你要用的组合键（如 Ctrl+Alt+H）；按 Esc 取消。</div>
         <div class="hint" id="hotkeyStatus"></div>
         <p class="hint">
           按一次隐藏悬浮条，再按一次恢复；也可点悬浮条上的 ⊖ 按钮隐藏，从系统托盘菜单唤回。
