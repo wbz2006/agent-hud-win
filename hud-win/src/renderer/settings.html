@@ -16,29 +16,28 @@
       <button class="icon-btn" id="closeBtn" title="关闭" hidden>✕</button>
     </header>
 
+    <!--
+      排列原则：**越常改的越靠前**。
+
+        1  常规          —— 开机自启 / 热键 / 停靠 / 预算，几乎每天会碰
+        2  悬浮条圆环     —— 决定圆环显示什么，观感相关，改完立刻可见
+        3  监控数据源     —— 开关某个 agent，偶尔会动
+        4  采集间隔       —— 调过一轮就不再动
+        5  中转站余额     —— 一次性配置（填完基本不动），且涉及凭据
+        6  金额计价       —— 需要理解 CC Switch 的折算逻辑才会去改
+        7  Beta 限流监控  —— 实验性功能，默认关闭，放最后
+
+      早期版本把「金额计价」和「Beta」放在中段，结果常用项被挤到下面，
+      每次要滚半页才摸到。按使用频率重排后，常用项一进页面就能看到。
+    -->
     <main class="body">
-      <!-- 通用 -->
+      <!-- 1. 常规（最常用） -->
       <section class="sect">
         <h2>常规</h2>
 
         <label class="row">
           <span class="k">开机自启</span>
           <input type="checkbox" id="autostart" />
-        </label>
-
-        <div class="row">
-          <span class="k">采集间隔</span>
-          <select id="interval">
-            <option value="10000">10 秒</option>
-            <option value="30000">30 秒</option>
-            <option value="60000">1 分钟</option>
-            <option value="300000">5 分钟</option>
-          </select>
-        </div>
-
-        <label class="row">
-          <span class="k">始终置顶</span>
-          <input type="checkbox" id="alwaysOnTop" />
         </label>
 
         <div class="row">
@@ -61,6 +60,9 @@
             <option value="right">屏幕右侧（竖排）</option>
           </select>
         </div>
+        <p class="hint">
+          竖排时 HUD 是贴在屏幕左/右边缘的一条竖条，垂直居中；悬停时面板朝屏幕内侧展开。
+        </p>
 
         <div class="row">
           <span class="k">今日预算（元）</span>
@@ -70,12 +72,56 @@
           圆环进度弧的分母：弧长 = 今日花费 ÷ 该预算。例如填 8，今天花了 2 元就填满 1/4 圈。填 0 或留空可禁用比例（弧只显示状态）。
         </p>
 
+        <label class="row">
+          <span class="k">始终置顶</span>
+          <input type="checkbox" id="alwaysOnTop" />
+        </label>
+      </section>
+
+      <!-- 2. 圆环显示 -->
+      <section class="sect">
+        <h2>悬浮条圆环</h2>
+        <div class="row">
+          <span class="k">显示内容</span>
+          <select id="ringMode">
+            <option value="auto">自动（限流 &gt; 积分 &gt; 活跃度）</option>
+            <option value="rate">只显示限流状态</option>
+            <option value="credit">只显示剩余积分</option>
+            <option value="activity">只显示活跃度</option>
+          </select>
+        </div>
         <p class="hint">
-          竖排时 HUD 是贴在屏幕左/右边缘的一条竖条，垂直居中；悬停时面板朝屏幕内侧展开。
+          三个环分别对应 Codex / Claude / DeepSeek。环的<strong>颜色</strong>表示该源的实时状态
+          （绿=可用、红=限流中、灰=无调用），<strong>弧长</strong>表示今日花费占预算的比例。
         </p>
       </section>
 
-      <!-- 中转站余额 -->
+      <!-- 3. 监控数据源 -->
+      <section class="sect">
+        <h2>监控数据源</h2>
+        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
+        <div id="sourceList" class="sources"></div>
+      </section>
+
+      <!-- 4. 采集间隔 -->
+      <section class="sect">
+        <h2>采集</h2>
+        <div class="row">
+          <span class="k">采集间隔</span>
+          <select id="interval">
+            <option value="10000">10 秒</option>
+            <option value="30000">30 秒</option>
+            <option value="60000">1 分钟</option>
+            <option value="300000">5 分钟</option>
+          </select>
+        </div>
+        <p class="hint">
+          间隔越短数字越新鲜，但读取会话文件与 CC Switch 账本的 CPU 占用也越高。
+          10 秒适合盯着看的时候，平时 30 秒 ~ 1 分钟就够。
+        </p>
+      </section>
+
+      <!-- 5. 中转站余额（一次性配置，且涉及凭据，放中后段） -->
       <section class="sect">
         <h2>Codex 中转站余额</h2>
         <p class="hint">
@@ -110,21 +156,7 @@
         </div>
       </section>
 
-      <!-- 圆环显示 -->
-      <section class="sect">
-        <h2>悬浮条圆环</h2>
-        <div class="row">
-          <span class="k">显示内容</span>
-          <select id="ringMode">
-            <option value="auto">自动（限流 &gt; 积分 &gt; 活跃度）</option>
-            <option value="rate">只显示限流状态</option>
-            <option value="credit">只显示剩余积分</option>
-            <option value="activity">只显示活跃度</option>
-          </select>
-        </div>
-      </section>
-
-      <!-- 金额计价 -->
+      <!-- 6. 金额计价（需要理解折算逻辑才会改，靠后） -->
       <section class="sect">
         <h2>金额计价</h2>
         <div class="row">
@@ -144,14 +176,7 @@
         </p>
       </section>
 
-      <!-- 监控范围 -->
-      <section class="sect">
-        <h2>监控数据源</h2>
-        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
-        <div id="sourceList" class="sources"></div>
-      </section>
-
-      <!-- 限流（整组是 Beta 功能，默认关闭） -->
+      <!-- 7. Beta 限流监控（实验性功能，默认关闭，放最后） -->
       <section class="sect">
         <h2><span class="beta-tag">Beta</span>限流监控</h2>
 
