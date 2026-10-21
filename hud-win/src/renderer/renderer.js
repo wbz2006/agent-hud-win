@@ -626,7 +626,31 @@ function markHtml(r, opts) {
    */
   const costLabel = todayCny != null ? `￥${todayCny.toFixed(2)}` : '&mdash;';
 
-  return `<div class="mark${compact ? '' : ' grid-item'}" title="${esc(r.key)} — ${state}${
+  /*
+   * 可用性状态 → 胶囊底色。
+   *
+   * 用户要求：
+   *   不可用（近 24h 有失败请求）→ 胶囊底色变**暗红**（浮动/呼吸感）
+   *   正常（近 24h 全成功）     → 胶囊底色为**深绿**（浮动/呼吸感）
+   *   无足够数据                 → 保持原样（黑胶囊 + 细边框）
+   *
+   * 主色调仍是黑色：底色只是很淡的叠加，不是把整条染成红/绿。
+   * 状态同时以 data-state 挂在 .mark 上，供悬停提示与 CSS 使用；
+   * 整个胶囊的底色由 renderMarks 汇总后写到 body 的 data-avail 上。
+   */
+  const barState = r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown';
+
+  // 悬停提示：不可用时明确说清"哪里不可用、失败率多少"
+  const availTip =
+    r.availability != null
+      ? `；可用性 ${(r.availability * 100).toFixed(1)}%（近24h ${r.availRequests} 次，失败 ${r.availErrors} 次）${
+          r.avgLatencyMs != null ? `，平均延迟 ${(r.avgLatencyMs / 1000).toFixed(1)}s` : ''
+        }`
+      : '；暂无可用性样本';
+
+  return `<div class="mark${compact ? '' : ' grid-item'} mark--${barState}" data-state="${barState}" title="${esc(
+    r.key
+  )} — ${state}${availTip}${
     todayCny != null ? `；今日 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}` : ''
   }">
     <div class="mark-icon">
@@ -687,6 +711,7 @@ function sourceMeterItems(summary) {
   const bySrc = summary.bySource || {};
   // 今日花费按 app_type 分组：{ claude: {usd,requests}, codex: {...}, ... }
   const byApp = (summary.todayCost && summary.todayCost.ok && summary.todayCost.byApp) || {};
+  const availability = summary.availability || null;
   const items = [];
 
   for (const [key, meta] of Object.entries(SOURCE_VENDOR)) {
@@ -719,6 +744,20 @@ function sourceMeterItems(summary) {
     const todayCny =
       appCost && typeof appCost.cny === 'number' ? appCost.cny : todayUsd != null ? todayUsd / 5 : null;
 
+    /*
+     * 可用性（近 24h 请求成功率）—— 来自 CC Switch 的 status_code 统计。
+     *
+     * 这与 limited（上游限流）是**两个不同维度**：
+     *   limited   = 撞到配额上限，请求被拒（DSH 日志信号）
+     *   available = 中转站/官方接口返回 4xx/5xx 或超时（CC Switch 账本信号）
+     * 二者任一异常都算"这个 agent 当前不可用"，但提示文案要区分开。
+     */
+    const avail = availability && availability.ok ? availability.byApp[key] : null;
+    // 至少要有一定样本才判定，否则一两次偶发失败会造成闪烁
+    const MIN_SAMPLE = 3;
+    const hasAvail = avail && avail.requests >= MIN_SAMPLE && avail.availability != null;
+    const degraded = hasAvail && avail.availability < 1;
+
     items.push({
       vendor: meta.vendor,
       label: meta.label,
@@ -732,6 +771,13 @@ function sourceMeterItems(summary) {
       todayCny,
       key: meta.label,
       providerLabel: meta.label,
+      // 可用性附加信息（供 mark 底色与悬停提示使用）
+      availability: hasAvail ? avail.availability : null,
+      availRequests: avail ? avail.requests : 0,
+      availErrors: avail ? avail.errors : 0,
+      avgLatencyMs: avail ? avail.avgLatencyMs : null,
+      p95LatencyMs: avail ? avail.p95LatencyMs : null,
+      degraded,
     });
   }
   return items;
@@ -750,6 +796,27 @@ function renderMarks(summary) {
     .join('');
 
   el.innerHTML = html || '<span class="mark-label" style="color:var(--text-dim)">暂无数据</span>';
+
+  /*
+   * 胶囊整体底色：按各 mark 的可用性聚合。
+   *
+   * 聚合规则（只看**有样本**的 mark）：
+   *   任一有样本的 mark 不可用 → unavailable（暗红）
+   *   有样本的 mark 全部可用   → healthy（深绿）
+   *   没有任何样本             → unknown（保持原黑）
+   *
+   * 为什么要排除 unknown：Claude / DSH 的请求不进 CC Switch 账本
+   * （Claude 走官方账号、DSH 走 WorkBuddy 直连），它们永远没有可用性样本。
+   * 如果要求"所有 mark 都 healthy"才变绿，那一项无样本就永远把整条拖回黑色，
+   * 用户根本看不到任何颜色 —— 实测踩到过（body 的 data-avail 恒为 unknown）。
+   * 所以只对"能判断的"下结论，无法判断的不参与投票。
+   */
+  const states = items.map((r) => (r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown'));
+  const known = states.filter((s) => s !== 'unknown');
+  let barState = 'unknown';
+  if (known.includes('unavailable')) barState = 'unavailable';
+  else if (known.length > 0 && known.every((s) => s === 'healthy')) barState = 'healthy';
+  document.body.dataset.avail = barState;
 
   // 回报内容宽度（环数变化与 hover 态都会影响栏宽）
   measureBar();

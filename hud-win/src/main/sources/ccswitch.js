@@ -335,7 +335,130 @@ function listProviders() {
   }
 }
 
+/**
+ * 各 app_type 的**可用性统计**（近 N 小时的请求成功率与延迟）。
+ *
+ * 为什么用 status_code 而不是延迟判定"不可用"：
+ *   实测本机近 7 天 1500 次 codex 请求**全部是 200**，但平均延迟 22.6 秒、
+ *   最高 207 秒。延迟高只是"慢"，不代表"不可用"；真正的中断会体现为
+ *   4xx/5xx 或超时无记录。所以可用率 = 非错误状态码占比，延迟单独作为辅助指标。
+ *
+ * 判定口径：
+ *   - 可用：status_code 为 2xx/3xx
+ *   - 不可用：status_code >= 400，或记录里 status_code 为空且 error_message 有内容
+ *   - 注意有些行的 status_code 可能是 NULL（请求被中断），按不可用处理更保守
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.hours=24] 统计窗口（小时）
+ * @returns {{ok:boolean, byApp?:object, reason?:string}}
+ *   byApp: {
+ *     codex: {
+ *       requests, errors, availability(0~1),
+ *       avgLatencyMs, p95LatencyMs,
+ *       recent: [{ ok, status, latencyMs }]   // 最近 N 条，供迷你条形图
+ *     }
+ *   }
+ */
+function readAvailability({ hours = 24 } = {}) {
+  const s = ccdb.probe();
+  if (!s.ok) return { ok: false, reason: failReason(), byApp: {} };
+
+  const hasApp = !!s.appType;
+  // status_code 不是探测层负责的字段（探测层只认金额/时间/app/模型），
+  // 这里直接查列名：当前库确实有 status_code，缺了就在下面降级。
+  const window = Math.max(1, Number(hours) || 24);
+  const where = s.createdAt
+    ? `WHERE ${s.createdAt} >= strftime('%s','now') - ${window} * 3600`
+    : '';
+  const selectApp = hasApp ? s.appType : 'NULL';
+
+  /*
+   * 主统计：按 app 聚合总数/错误数/延迟。
+   * SQLite 没有 P95 内置函数，用「按 app 分组取延迟分位数」的子查询代价高，
+   * 改为取所有延迟值回来在 JS 里算分位数 —— 单源通常几千行，可接受。
+   */
+  const sql = `
+    SELECT ${selectApp} AS app,
+           COUNT(*) AS total,
+           SUM(CASE WHEN status_code IS NULL OR status_code >= 400 THEN 1 ELSE 0 END) AS errors,
+           AVG(latency_ms) AS avg_ms
+    FROM ${s.logTable}
+    ${where}
+    GROUP BY app
+  `;
+
+  /*
+   * 最近 N 条记录（按时间倒序），用于小条形图。
+   * 只取必要字段；status_code / latency_ms 缺列时整段降级为空数组，
+   * 不影响上面的汇总数字。
+   */
+  const orderBy = s.createdAt ? `ORDER BY ${s.createdAt} DESC` : 'ORDER BY rowid DESC';
+  const recentSql = `
+    SELECT ${selectApp} AS app, status_code, latency_ms
+    FROM ${s.logTable}
+    ${where}
+    ${orderBy}
+    LIMIT 400
+  `;
+
+  try {
+    const rows = query(sql);
+    const byApp = {};
+    for (const [app, total, errors, avgMs] of rows) {
+      const key = app == null ? '_all' : String(app);
+      const n = Number(total || 0);
+      const err = Number(errors || 0);
+      byApp[key] = {
+        requests: n,
+        errors: err,
+        // errors 全部为 NULL 参与计算时 SUM 返回 null，按 0 处理
+        availability: n > 0 ? (n - err) / n : null,
+        avgLatencyMs: avgMs == null ? null : Math.round(Number(avgMs)),
+        p95LatencyMs: null,
+        recent: [],
+      };
+    }
+
+    // 补充 P95 与最近记录
+    try {
+      const recents = query(recentSql, 8000);
+      for (const [app, status, latency] of recents) {
+        const key = app == null ? '_all' : String(app);
+        if (!byApp[key]) continue;
+        const okReq = status != null && status > 0 && status < 400;
+        byApp[key].recent.push({
+          ok: okReq,
+          status: status == null ? null : Number(status),
+          latencyMs: latency == null ? null : Number(latency),
+        });
+      }
+      // P95：对该 app 的延迟数组排序取 95% 分位
+      for (const rec of Object.values(byApp)) {
+        const lat = rec.recent.map((r) => r.latencyMs).filter((v) => v != null).sort((a, b) => a - b);
+        if (lat.length) {
+          const idx = Math.min(lat.length - 1, Math.floor(lat.length * 0.95));
+          rec.p95LatencyMs = Math.round(lat[idx]);
+        }
+        // recent 已按时间倒序，条形图要"旧 → 新"，翻转一份
+        rec.recent.reverse();
+      }
+    } catch {
+      /* 最近记录取不到不影响汇总 */
+    }
+
+    return { ok: true, byApp };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    return {
+      ok: false,
+      reason: /no such column/i.test(msg) ? 'CC Switch 日志表缺少 status_code 字段' : msg,
+      byApp: {},
+    };
+  }
+}
+
 module.exports = {
+  readAvailability,
   readTodayCost,
   readTodayCostBy,
   listProviders,

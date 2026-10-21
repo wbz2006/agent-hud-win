@@ -68,6 +68,19 @@ async function runOnce(cfg) {
       todayCost = { ok: false, error: String((err && err.message) || err) };
     }
 
+    /*
+     * 可用性统计（近 24h 请求成功率与延迟）。
+     *
+     * 和 todayCost 分开算：花费读金额列，可用性读 status_code / latency_ms，
+     * 两者各自的失败互不影响。失败时 UI 不显示可用性条，不改环的颜色。
+     */
+    let availability = null;
+    try {
+      availability = ccswitch.readAvailability({ hours: 24 });
+    } catch (err) {
+      availability = { ok: false, reason: String((err && err.message) || err), byApp: {} };
+    }
+
     // 限流监控的四个开关（设置页「限流监控」分组）：
     //   总开关 rateEnabled / OpenCode rateOpenCode / 宽限 rateGraceMinutes
     //   【Beta】免费模型 betaRateFreeModel（默认关闭）
@@ -80,6 +93,7 @@ async function runOnce(cfg) {
     summary.credits = credits;
     summary.relayBalance = relayBalance;
     summary.todayCost = todayCost;
+    summary.availability = availability;
 
     parentPort.postMessage({
       ok: true,

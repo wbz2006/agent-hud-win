@@ -97,6 +97,122 @@ html, body {
   border: 1px solid var(--hairline);
   border-radius: 999px;
   -webkit-app-region: no-drag;
+  /*
+   * 可用性底色过渡（见下方 body[data-avail] 规则）。
+   *
+   * 用户要求「不可用时暗红浮动、正常时深绿浮动」，但主色调必须仍是黑色。
+   * 所以这里不改 background 本身，而是过渡一层很淡的 box-shadow 内发光 +
+   * 背景色混合比例，视觉上是"黑胶囊透出一点红/绿"。
+   * 过渡放在 .bar 上，避免状态切换时颜色跳变。
+   */
+  transition: background-color 600ms ease, box-shadow 600ms ease;
+}
+
+/*
+ * ---------- 胶囊可用性状态（用户 2026-10-21 要求）----------
+ *
+ * 判定来源：CC Switch 账本近 24h 的 status_code 成功率（ccswitch.readAvailability）。
+ * 聚合与挂类逻辑在 renderMarks()，这里只负责呈现。
+ *
+ * 设计要点：
+ *   1. 主色调仍是黑色 —— 底色只叠加极淡的红/绿，不是整条染色
+ *   2. 「浮动」用缓慢的呼吸动画（4s 一个周期），不做闪烁，
+ *      长时间盯着看不会烦躁，也不会误读成"正在报警"
+ *   3. 未知状态（无样本）保持原样，不伪装成"正常"
+ */
+
+/* 正常：深绿浮动 */
+body[data-avail='healthy'] .bar {
+  background-color: rgba(10, 32, 22, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.35),
+              0 0 18px rgba(61, 220, 132, 0.18);
+  animation: bar-breathe-ok 4s ease-in-out infinite;
+}
+
+/* 不可用：暗红浮动 */
+body[data-avail='unavailable'] .bar {
+  background-color: rgba(38, 12, 12, 0.88);
+  box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.45),
+              0 0 22px rgba(255, 69, 58, 0.26);
+  animation: bar-breathe-bad 3.2s ease-in-out infinite;
+}
+
+/* 无样本：保持原来的黑胶囊，不做任何额外染色 */
+body[data-avail='unknown'] .bar {
+  animation: none;
+}
+
+/*
+ * 呼吸动画：只动外层光晕强度与透明度，不动尺寸。
+ * 用 0.18 → 0.34 的幅度，够被注意到又不刺眼。
+ */
+@keyframes bar-breathe-ok {
+  0%, 100% {
+    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.30),
+                0 0 14px rgba(61, 220, 132, 0.14);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.45),
+                0 0 22px rgba(61, 220, 132, 0.26);
+  }
+}
+
+@keyframes bar-breathe-bad {
+  0%, 100% {
+    box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.38),
+                0 0 16px rgba(255, 69, 58, 0.20);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.58),
+                0 0 26px rgba(255, 69, 58, 0.34);
+  }
+}
+
+/*
+ * 单个 mark 的悬停提示。
+ *
+ * 原生 title 属性有 1~2 秒延迟且样式不可控，用户要求"鼠标浮到对应图标
+ * 时显示不可用提示"，这里用自定义 tooltip 保证即时响应。
+ * 内容已在 markHtml 里写进 title，这里用 CSS ::after 读取 attr(title)。
+ */
+.mark[data-state='unavailable'] {
+  position: relative;
+}
+.mark[data-state='unavailable']:hover::after {
+  content: attr(title);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(20, 8, 8, 0.96);
+  border: 1px solid rgba(255, 69, 58, 0.45);
+  color: #ffb4ae;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+  z-index: 50;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* 悬停提示在竖排模式下出现在右侧，避免被屏幕边缘裁掉 */
+body.vertical .mark[data-state='unavailable']:hover::after {
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* 系统开启「减少动态效果」时停掉呼吸，只保留静态底色 */
+@media (prefers-reduced-motion: reduce) {
+  body[data-avail='healthy'] .bar,
+  body[data-avail='unavailable'] .bar {
+    animation: none;
+  }
 }
 
 /* ---------- agent marks：每个 agent 一个 cell ---------- */
