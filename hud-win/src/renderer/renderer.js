@@ -140,12 +140,42 @@ function renderRates(rateLimits) {
  *
  * 真实值来自插件注册的只读路由（见 sources/quota.js），是上游计费接口的
  * 实时结果；DSH 未运行时降级为只显示本地消耗量，不会假装有额度数字。
+ *
+ * @param {object} summary 采集结果
+ * @param {object} [opts]
+ * @param {boolean} [opts.credits=true]  是否渲染 WorkBuddy 积分段
+ * @param {boolean} [opts.relay=false]   是否渲染中转站余额段（Codex 用）
  */
-function renderQuotas(summary) {
+function renderQuotas(summary, opts = {}) {
   const el = $('quotas');
-  const credits = summary.credits || [];
+  const wantCredits = opts.credits !== false;
+  const wantRelay = !!opts.relay;
+  const credits = wantCredits ? summary.credits || [] : [];
   const providers = summary.providers || [];
   const parts = [];
+
+  // 0) 中转站余额（Codex 走中转站时唯一能拿到的真实余额）
+  let relayShown = false;
+  const relay = summary.relayBalance;
+  if (wantRelay && relay && relay.ok) {
+    relayShown = true;
+    const remain = relay.remain ?? 0;
+    const used = relay.used ?? 0;
+    const total = relay.total ?? remain + used;
+    // ratio 是「剩余/总额」，null 时（中转站没给已用量）画满但用中性色
+    const ratio = relay.ratio == null ? null : relay.ratio;
+    const color = ratio === null ? COLOR.ok : ratio >= 0.5 ? COLOR.ok : ratio >= 0.2 ? COLOR.w : COLOR.c;
+    parts.push(`<div class="quota-row">
+      <div class="quota-top">
+        <span class="quota-name">Codex 中转站 剩余</span>
+        <span class="quota-credit" style="color:${color}">$${fmtMoney(remain)}</span>
+      </div>
+      <span class="quota-track"><span class="quota-fill" style="width:${ratio === null ? 100 : Math.max(2, Math.round(ratio * 100))}%;background:${color}"></span></span>
+      <div class="quota-packs">
+        <span class="quota-pack">已用 $${fmtMoney(used)}${total ? ' / 共 $' + fmtMoney(total) : ''}</span>
+      </div>
+    </div>`);
+  }
 
   // 1) 真实剩余额度（可能有两个账号：国内版 / 国际版）
   let creditShown = 0;
@@ -215,7 +245,22 @@ function renderQuotas(summary) {
   }
 
   el.innerHTML = parts.join('') || '<div class="quota-hint">暂无数据</div>';
-  $('quotaNote').textContent = creditShown ? new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '离线';
+  /*
+   * 右上角时间戳 —— 失败时显示「离线」这一状态**已按用户要求删除**。
+   * 原因：DSH 额度路由不可达时，这一行会显示「离线」，而下面每行已经
+   * 单独写了不可达原因，两者重复；更糟的是它把一个「部分数据源异常」
+   * 渲染成整个额度区「离线」，误导性大于信息量。
+   * 现在只有拿到数据才写采集时间，拿不到就留空。
+   */
+  $('quotaNote').textContent =
+    creditShown || relayShown ? new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+}
+
+/** 中转站金额格式化：最多 2 位小数，避免一长串浮点尾巴。 */
+function fmtMoney(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '--';
+  return v.toFixed(2);
 }
 
 const AGENT_COLORS = ['#c084fc', '#60a5fa', '#2dd4bf', '#fb923c', '#f472b6', '#a3e635'];
@@ -870,14 +915,33 @@ function render(summary) {
   }
 
   /*
-   * 额度区：只有 DSH 源有积分概念（WorkBuddy 等）。
-   * 切到 Codex / Claude 时藏起来，否则会显示一堆与该工具无关的积分包。
+   * 额度区：按工具分两部分，谁的数据谁显示。
+   *
+   *  - WorkBuddy 积分（DSH 源）：只有 DSH 有积分概念
+   *  - 中转站余额（Codex 源）：Codex 走中转站时官方额度接口拿不到，
+   *    改用中转站自己的余额接口（relay.js）
+   *
+   * 为什么之前「Codex 的额度区显示成 WorkBuddy」：
+   * 原先是 showQuota = (activeSource === 'all' || activeSource === 'dsh')，
+   * 即「只有 DSH 才显示额度区」；而 relayBalance 虽然早就由 worker 算好了，
+   * renderer 从来没读它。于是 Codex Tab 上额度区被藏起来，用户看到的
+   * WorkBuddy 行其实来自 all/DSH 视角 —— 数据算出却不显示，等于没有。
    */
   const quotaSection = $('quotaSection');
-  const showQuota = activeSource === 'all' || activeSource === 'dsh';
+  const showCredits = activeSource === 'all' || activeSource === 'dsh';
+  const relay = summary.relayBalance || null;
+  const showRelay = (activeSource === 'all' || activeSource === 'codex') && relay && relay.ok;
+  const showQuota = showCredits || showRelay;
+
   if (quotaSection) quotaSection.hidden = !showQuota;
+
   if (showQuota) {
-    renderQuotas(summary);
+    // 标题随场景改名：Codex Tab 只显示中转站，DSH Tab 只显示积分
+    const title = quotaSection && quotaSection.querySelector('.panel-head > span');
+    if (title) {
+      title.textContent = showCredits && showRelay ? '额度' : showRelay ? '中转站余额' : '额度（积分）';
+    }
+    renderQuotas(summary, { credits: showCredits, relay: showRelay });
   } else {
     $('quotas').innerHTML = '';
     $('quotaNote').textContent = '';

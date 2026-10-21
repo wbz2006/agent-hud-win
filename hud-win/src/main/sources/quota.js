@@ -30,8 +30,7 @@ const os = require('os');
 
 const DSH_HOME = path.join(os.homedir(), '.dsh');
 
-/** 插件注册的额度路由。端口与 DSH web GUI 相同。 */
-const DSH_WEB_PORT = 19387;
+/** 插件注册的两条额度路由（国内版 / 国际版），端口由 findDshPort() 决定。 */
 const ENDPOINTS = [
   { key: 'workbuddy', label: 'WorkBuddy', path: '/plugins/dsh-workbuddy-connect/status' },
   { key: 'workbuddy-ai', label: 'WorkBuddy AI', path: '/plugins/dsh-workbuddy-connect/ai/status' },
@@ -55,6 +54,104 @@ const PROVIDER_LABELS = {
 };
 
 /**
+ * DSH 本地 HTTP 服务端口 —— **不能写死**。
+ *
+ * 踩过的坑（2026-10-21）：早先这里固定 19387，当时 DSH 恰好跑在该端口上，
+ * 一切正常；后来 DSH 每次启动随机分配端口（实测这次是 8734，同进程还占了
+ * 8735~8740 做内部服务），而 19387 已无人监听，于是额度区永远显示
+ * 「DSH 未运行或路由不可达 / 离线」—— **DSH 明明开着**。
+ *
+ * 现在的探测顺序：
+ *   1. 环境变量 DSH_WEB_PORT（用户在设置里手动指定，优先级最高）
+ *   2. 已知候选端口（老版本用过 19387，新版 GUI 从 8734 起）
+ *   3. 系统里所有 127.0.0.1 监听端口（兜底，只在 CDP/新版 DSH 未知时起作用）
+ * 探测判据是「这个端口上 /plugins/<id>/status 能返回 JSON」，不是「端口开着」。
+ */
+const DSH_WEB_PORT_CANDIDATES = [19387, 8734];
+
+/** 已知的额度路由插件 id（用于探测时定位端口）。 */
+const QUOTA_PLUGIN_ID = 'dsh-workbuddy-connect';
+
+const PROBE_TIMEOUT_MS = 700;   // 单次探测，必须短：候选端口多时会串行累加
+const PROBE_CACHE_MS = 60000;   // 探测成功后缓存 1 分钟，避免每轮都扫
+
+let probeCache = null; // { port, at }
+
+/**
+ * 判断某端口上的 DSH 是否真的响应该插件的额度路由。
+ * 只看「有没有 HTTP 响应」——200 说明已登录，401/403 说明端口对但仍可用。
+ */
+async function probePort(port, timeoutMs = PROBE_TIMEOUT_MS) {
+  try {
+    const res = await fetch(
+      `http://127.0.0.1:${port}/plugins/${QUOTA_PLUGIN_ID}/status`,
+      { signal: AbortSignal.timeout(timeoutMs) }
+    );
+    // 401/403 也算「端口正确」：路由存在，只是这个请求没带鉴权
+    return { port, reachable: res.status === 200 || res.status === 401 || res.status === 403 };
+  } catch {
+    return { port, reachable: false };
+  }
+}
+
+/**
+ * 找到当前 DSH 的端口。
+ * @returns {Promise<number|null>} 找不到返回 null（调用方降级展示，不编造数据）
+ */
+async function findDshPort() {
+  const now = Date.now();
+  if (probeCache && now - probeCache.at < PROBE_CACHE_MS) return probeCache.port;
+
+  // 1) 用户手动指定
+  const explicit = Number(process.env.DSH_WEB_PORT || 0);
+  if (explicit > 0) {
+    const r = await probePort(explicit);
+    if (r.reachable) return remember(explicit);
+  }
+
+  // 2) 已知候选（并行探测，避免串行等待）
+  const known = await Promise.all(DSH_WEB_PORT_CANDIDATES.map((p) => probePort(p)));
+  const hit = known.find((r) => r.reachable);
+  if (hit) return remember(hit.port);
+
+  // 3) 兜底：扫本机所有监听端口
+  const ports = listLocalListeningPorts();
+  const scanned = await Promise.all(ports.map((p) => probePort(p, 400)));
+  const any = scanned.find((r) => r.reachable);
+  if (any) return remember(any.port);
+
+  return null;
+}
+
+function remember(port) {
+  probeCache = { port, at: Date.now() };
+  return port;
+}
+
+/** 列出本机 127.0.0.1 上的监听端口（仅 Windows 可用，失败返回空数组）。 */
+function listLocalListeningPorts() {
+  try {
+    const { execFileSync } = require('child_process');
+    const out = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 3000 });
+    const set = new Set();
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING/i);
+      if (m && /^(127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\])$/.test(m[1])) set.add(Number(m[2]));
+    }
+    // 排除明显无关的系统端口，减少探测噪音
+    const skip = new Set([135, 139, 445, 5353, 5357, 49152, 49664, 49665, 49666, 49667, 49668, 49669]);
+    return [...set].filter((p) => p > 1024 && !skip.has(p));
+  } catch {
+    return [];
+  }
+}
+
+/** 端口缓存失效（设置变更后可调用，让下一轮重新探测）。 */
+function resetPortCache() {
+  probeCache = null;
+}
+
+/**
  * 拉取真实剩余额度。
  * 单个端点失败不影响另一个；DSH 未运行时整体返回空数组（调用方降级展示）。
  *
@@ -62,10 +159,27 @@ const PROVIDER_LABELS = {
  */
 async function fetchCredits({ timeoutMs = 4000 } = {}) {
   const out = [];
+  const port = await findDshPort();
+  if (!port) {
+    // 一个端口都没探到：把所有端点标为不可达，原因说清楚
+    for (const ep of ENDPOINTS) {
+      out.push({
+        key: ep.key,
+        label: ep.label,
+        ok: false,
+        error: 'DSH 未运行或路由不可达',
+        total: null,
+        accounts: [],
+        expiresAt: null,
+      });
+    }
+    return out;
+  }
+
   for (const ep of ENDPOINTS) {
     const rec = { key: ep.key, label: ep.label, ok: false, error: null, total: null, accounts: [], expiresAt: null };
     try {
-      const res = await fetch(`http://127.0.0.1:${DSH_WEB_PORT}${ep.path}`, {
+      const res = await fetch(`http://127.0.0.1:${port}${ep.path}`, {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -229,4 +343,12 @@ function aggregateByProvider(sessions, { period = 'today', now = Date.now() } = 
   return out;
 }
 
-module.exports = { fetchCredits, aggregateByProvider, loadRates, PROVIDER_LABELS, DSH_WEB_PORT };
+module.exports = {
+  fetchCredits,
+  aggregateByProvider,
+  loadRates,
+  PROVIDER_LABELS,
+  findDshPort,
+  resetPortCache,
+  ENDPOINTS,
+};
