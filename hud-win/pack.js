@@ -68,8 +68,17 @@ const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
     icon: path.join(ROOT, 'src', 'renderer', 'assets', 'app-icon.ico'),
     // 渲染层的品牌 logo 也要真实文件（img src 指向 assets/），一并解包更稳
     ignore: [
+      /*
+       * build / build2 / build3 … 全系列都排除，不能只写 build/。
+       *
+       * 踩过的坑：早先只排除了 `build/`（以及当前输出目录），于是用
+       * HUD_OUT=build6 打包时，build2–build5 里的历史产物被整个打进 asar，
+       * 产物逐轮膨胀：build2 287MB → build3 574MB → build4 1.06GB →
+       * build5 2.03GB → build6 3.97GB（app.asar 本体 3.7GB）。
+       * 这里用前缀匹配覆盖全部 buildN，同时排除 dist 与输出目录本身。
+       */
+      /^[/\\]build\d*[/\\]/,
       /^[/\\]dist[/\\]/,
-      /^[/\\]build[/\\]/,
       // 用 HUD_OUT 换目录时，也要把该目录本身排除在打包内容之外，
       // 否则会把上一次的产物打进 asar（体积翻倍且可能导致递归复制）
       new RegExp(`^[/\\\\]${path.basename(outDir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[/\\\\]`),
