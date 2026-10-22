@@ -104,7 +104,7 @@ const PACKAGE_VERSION = require(path.join(ROOT, 'package.json')).version;
     '  exit /b 1',
     ')',
     'set ELECTRON_RUN_AS_NODE=',
-    '"%~dp0AgentHUD.exe"',
+    '"%~dp0AgentHUD.exe" --no-sandbox',
     '',
   ].join('\r\n');
   fs.writeFileSync(path.join(target, 'Run-AgentHUD.cmd'), launcher, 'ascii');
