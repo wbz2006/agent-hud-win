@@ -16,6 +16,7 @@ const sources = require('./index');
 const quota = require('./quota');
 const relay = require('./relay');
 const ccswitch = require('./ccswitch');
+const deepseekBalanceMod = require('./deepseek-balance');
 const config = require('../config');
 
 /**
@@ -58,12 +59,38 @@ async function runOnce(cfg) {
       relayBalance = { ok: false, error: String((err && err.message) || err) };
     }
 
+    /*
+     * DSH 的 DeepSeek **官方账户余额**。
+     *
+     * DSH 走官方账号，消耗既不在 CC Switch 账本（只有 claude-desktop / codex），
+     * 也不是 WorkBuddy 积分。官方口径能拿到的只有余额：
+     *   GET https://api.deepseek.com/user/balance（Bearer <sk-...>）
+     * 未配置 Key 时返回 ok:false + 原因，UI 显示"未配置"，绝不显示 0。
+     */
+    let deepseekBalance = null;
+    try {
+      deepseekBalance = await deepseekBalanceMod.fetchBalance({ apiKey: cfg.deepseekApiKey });
+    } catch (err) {
+      deepseekBalance = { ok: false, reason: String((err && err.message) || err) };
+    }
+
     // 今日实际花费（CC Switch 账本，金额是真实计费值而非估算）。
     // 读 CC Switch 的 SQLite 会启动 python 子进程（约 100ms），失败不影响其它数据。
     // 计价方式由 cfg.costMode 决定（内部折算 / 真实汇率 / 原始值）。
     let todayCost = null;
     try {
       todayCost = ccswitch.readTodayCost(cfg.costMode);
+      /*
+       * 冷启动常见一次性失败：CC Switch 正在写库（SQLite 被占用），
+       * 或 python 子进程首启慢于探测超时。失败结果不缓存，但用户会先看到
+       * 两个环的 "—" 直到下一轮采集（30 秒）。
+       * 这里补一次间隔重试，把"刚开机看着像坏了"的观感消掉。
+       */
+      if (!todayCost || !todayCost.ok) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const again = ccswitch.readTodayCost(cfg.costMode);
+        if (again && again.ok) todayCost = again;
+      }
     } catch (err) {
       todayCost = { ok: false, error: String((err && err.message) || err) };
     }
@@ -91,6 +118,7 @@ async function runOnce(cfg) {
       rateGraceMinutes: Number(cfg.rateGraceMinutes),
     });
     summary.credits = credits;
+    summary.deepseekBalance = deepseekBalance;
     summary.relayBalance = relayBalance;
     summary.todayCost = todayCost;
     summary.availability = availability;

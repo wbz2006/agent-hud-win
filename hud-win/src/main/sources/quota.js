@@ -79,7 +79,14 @@ let probeCache = null; // { port, at }
 
 /**
  * 判断某端口上的 DSH 是否真的响应该插件的额度路由。
- * 只看「有没有 HTTP 响应」——200 说明已登录，401/403 说明端口对但仍可用。
+ *
+ * 返回分级而不是布尔值，因为本机可能同时跑着**多个 DSH 实例**：
+ * 只有 GUI 那个实例（额度路由返回 200 真实数据）可用，另一个实例
+ * 会给 401「Missing or invalid bearer」。两层都算"路由存在"，但只有
+ * 200 能拿到余额 —— 早先这里把 401 也当可用，于是随机选中了报 401 的
+ * 那个端口，额度区永远是错的端口（症状：余额显示不可用，但 DSH 明明开着）。
+ *
+ * level：2 = 200（能取数）｜1 = 401/403（端口对但被鉴权挡住）｜0 = 不可达
  */
 async function probePort(port, timeoutMs = PROBE_TIMEOUT_MS) {
   try {
@@ -87,40 +94,61 @@ async function probePort(port, timeoutMs = PROBE_TIMEOUT_MS) {
       `http://127.0.0.1:${port}/plugins/${QUOTA_PLUGIN_ID}/status`,
       { signal: AbortSignal.timeout(timeoutMs) }
     );
-    // 401/403 也算「端口正确」：路由存在，只是这个请求没带鉴权
-    return { port, reachable: res.status === 200 || res.status === 401 || res.status === 403 };
+    if (res.status === 200) return { port, level: 2 };
+    if (res.status === 401 || res.status === 403) return { port, level: 1 };
+    return { port, level: 0 };
   } catch {
-    return { port, reachable: false };
+    return { port, level: 0 };
   }
+}
+
+/** 从一批探测结果里挑最优：先要 level=2，其次才退 401/403。 */
+function pickProbe(results) {
+  const ok = results.find((r) => r && r.level === 2);
+  if (ok) return ok;
+  return results.find((r) => r && r.level === 1) || null;
 }
 
 /**
  * 找到当前 DSH 的端口。
+ *
+ * **必须有第二轮长超时探测**：DSH 一次会监听 3739~3745、8326 等一串端口，
+ * 其中只有 GUI 那个返回 200 真实数据，其余全是 401。首轮用短超时（并行扫几十个
+ * 端口不能拖慢采集）时，200 那个可能因为冷启动/忙碌超时被记成不可达，
+ * 于是选中了一个 401 端口 —— 症状就是「Dsh 明明开着，额度却显示不可用」。
+ * 第二轮只对首轮给出 401/403 的端口、用长超时再探，命中 200 就升级。
+ *
+ * @param {number} [timeoutMs] 指定则跳过缓存、并作为首轮超时（重试用）
  * @returns {Promise<number|null>} 找不到返回 null（调用方降级展示，不编造数据）
  */
-async function findDshPort() {
+async function findDshPort(timeoutMs) {
   const now = Date.now();
-  if (probeCache && now - probeCache.at < PROBE_CACHE_MS) return probeCache.port;
+  if (!timeoutMs && probeCache && now - probeCache.at < PROBE_CACHE_MS) return probeCache.port;
 
   // 1) 用户手动指定
   const explicit = Number(process.env.DSH_WEB_PORT || 0);
   if (explicit > 0) {
-    const r = await probePort(explicit);
-    if (r.reachable) return remember(explicit);
+    const r = await probePort(explicit, timeoutMs || PROBE_TIMEOUT_MS);
+    if (r.level >= 1) return remember(explicit);
   }
 
-  // 2) 已知候选（并行探测，避免串行等待）
-  const known = await Promise.all(DSH_WEB_PORT_CANDIDATES.map((p) => probePort(p)));
-  const hit = known.find((r) => r.reachable);
-  if (hit) return remember(hit.port);
+  // 2) 已知候选 + 本机全部监听端口，一起并行探测（首轮短超时）
+  const firstTimeout = timeoutMs || PROBE_TIMEOUT_MS;
+  const ports = [...new Set([...DSH_WEB_PORT_CANDIDATES, ...listLocalListeningPorts()])];
+  const first = await Promise.all(ports.map((p) => probePort(p, firstTimeout)));
+  const best = pickProbe(first);
+  if (best && best.level === 2) return remember(best.port);
 
-  // 3) 兜底：扫本机所有监听端口
-  const ports = listLocalListeningPorts();
-  const scanned = await Promise.all(ports.map((p) => probePort(p, 400)));
-  const any = scanned.find((r) => r.reachable);
-  if (any) return remember(any.port);
+  // 3) 首轮只拿到 401/403：用长超时重探这些端口，优先升级到 200
+  if (best && best.level === 1) {
+    const retryPorts = first.filter((r) => r.level === 1).map((r) => r.port);
+    const retry = await Promise.all(retryPorts.map((p) => probePort(p, timeoutMs || 2500)));
+    const better = pickProbe(retry);
+    if (better && better.level === 2) return remember(better.port);
+    return remember(best.port);
+  }
 
-  return null;
+  return best ? remember(best.port) : null;
 }
 
 function remember(port) {
@@ -155,62 +183,77 @@ function resetPortCache() {
  * 拉取真实剩余额度。
  * 单个端点失败不影响另一个；DSH 未运行时整体返回空数组（调用方降级展示）。
  *
+ * 失败时会**清端口缓存、用长超时重探一次**：本机 DSH 同时监听多个端口，
+ * 只有 GUI 那个返回 200；首轮短超时探测把它漏掉就会选中 401 端口。
+ * 不重探的话，一次误判要让余额区错上整整一分钟（端口缓存 60s）。
+ *
  * @returns {Promise<Array>} 每个账号一条 { key, label, ok, error, total, accounts, expiresAt }
  */
 async function fetchCredits({ timeoutMs = 4000 } = {}) {
-  const out = [];
-  const port = await findDshPort();
-  if (!port) {
-    // 一个端口都没探到：把所有端点标为不可达，原因说清楚
+  const unreachable = () =>
+    ENDPOINTS.map((ep) => ({
+      key: ep.key,
+      label: ep.label,
+      ok: false,
+      error: 'DSH 未运行或路由不可达',
+      total: null,
+      accounts: [],
+      expiresAt: null,
+    }));
+
+  const readFrom = async (port) => {
+    const out = [];
     for (const ep of ENDPOINTS) {
-      out.push({
-        key: ep.key,
-        label: ep.label,
-        ok: false,
-        error: 'DSH 未运行或路由不可达',
-        total: null,
-        accounts: [],
-        expiresAt: null,
-      });
+      const rec = { key: ep.key, label: ep.label, ok: false, error: null, total: null, accounts: [], expiresAt: null };
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}${ep.path}`, {
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const doc = await res.json();
+
+        if (doc.status === 'signed-out') {
+          rec.error = '未登录';
+        } else if (doc.creditsError) {
+          // 文档仍 200，但计费查询失败：如实上报，不显示 0
+          rec.error = String(doc.creditsError).slice(0, 120);
+        } else if (doc.credits && typeof doc.credits.total === 'number') {
+          rec.ok = true;
+          rec.total = doc.credits.total;
+          rec.accounts = (doc.credits.accounts || []).map((a) => ({
+            packageName: a.packageName,
+            remain: a.remain,
+            size: a.size,
+            unlimited: !!a.unlimited,
+          }));
+          rec.expiresAt = typeof doc.expiresAt === 'number' ? doc.expiresAt : null;
+          rec.domain = doc.domain || null;
+        } else {
+          rec.error = '响应缺少 credits.total';
+        }
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        rec.error = /fetch failed|ECONNREFUSED|abort/i.test(msg) ? 'DSH 未运行或路由不可达' : msg;
+      }
+      out.push(rec);
     }
     return out;
-  }
+  };
 
-  for (const ep of ENDPOINTS) {
-    const rec = { key: ep.key, label: ep.label, ok: false, error: null, total: null, accounts: [], expiresAt: null };
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}${ep.path}`, {
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const doc = await res.json();
+  const port = await findDshPort();
+  if (!port) return unreachable();
 
-      if (doc.status === 'signed-out') {
-        rec.error = '未登录';
-      } else if (doc.creditsError) {
-        // 文档仍 200，但计费查询失败：如实上报，不显示 0
-        rec.error = String(doc.creditsError).slice(0, 120);
-      } else if (doc.credits && typeof doc.credits.total === 'number') {
-        rec.ok = true;
-        rec.total = doc.credits.total;
-        rec.accounts = (doc.credits.accounts || []).map((a) => ({
-          packageName: a.packageName,
-          remain: a.remain,
-          size: a.size,
-          unlimited: !!a.unlimited,
-        }));
-        rec.expiresAt = typeof doc.expiresAt === 'number' ? doc.expiresAt : null;
-        rec.domain = doc.domain || null;
-      } else {
-        rec.error = '响应缺少 credits.total';
-      }
-    } catch (err) {
-      const msg = String((err && err.message) || err);
-      rec.error = /fetch failed|ECONNREFUSED|abort/i.test(msg) ? 'DSH 未运行或路由不可达' : msg;
-    }
-    out.push(rec);
+  const first = await readFrom(port);
+  if (first.some((r) => r.ok)) return first;
+
+  // 全部失败：可能是选错端口（401）或首轮探测超时。清缓存、长超时重探一次。
+  resetPortCache();
+  const retryPort = await findDshPort(3000);
+  if (retryPort && retryPort !== port) {
+    const again = await readFrom(retryPort);
+    if (again.some((r) => r.ok)) return again;
   }
-  return out;
+  return first;
 }
 
 /** 读取 WorkBuddy 模型目录的单价倍率（仅用于换算本地消耗）。 */

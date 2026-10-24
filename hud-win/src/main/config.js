@@ -106,6 +106,15 @@ const DEFAULTS = {
    */
   costMode: 'internal',
   /**
+   * DeepSeek 官方 API Key（platform.deepseek.com 生成，sk- 开头）。
+   *
+   * 用途：查**官方账户余额**（GET https://api.deepseek.com/user/balance）。
+   * DSH 的 DeepSeek 用量走官方账号，CC Switch 账本里没有它，所以第三个环
+   * 只能显示余额（而不是今日花费）。留空则显示"未配置"，绝不编造数字。
+   * 也可用环境变量 DEEPSEEK_API_KEY 兜底。
+   */
+  deepseekApiKey: '',
+  /**
    * 中转站余额（Codex 走中转站时官方额度接口拿不到，改用中转站自己的余额接口）。
    * baseUrl/quotaPath/token/cookie 任一为空 → 不显示余额环；
    * 绝不拿估算值冒充实测余额。

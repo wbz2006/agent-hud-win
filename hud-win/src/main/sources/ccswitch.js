@@ -200,9 +200,14 @@ function readTodayCost(mode = COST_MODE.INTERNAL) {
     const rows = query(sql);
     const byApp = {};
     let total = 0;
+    // Normalize app_type values to match UI source keys.
+    // DB stores 'claude-desktop' but UI expects 'claude'; map accordingly.
+    const APP_TYPE_MAP = { 'claude-desktop': 'claude' };
     for (const [app, req, usd] of rows) {
       const u = Number(usd || 0);
-      const key = app == null ? '_all' : String(app);
+      let key = app == null ? '_all' : String(app);
+      // Normalize: map 'claude-desktop' → 'claude' for UI compatibility
+      key = APP_TYPE_MAP[key] || key;
       byApp[key] = { usd: u, cny: toDisplay(u, mode), requests: Number(req || 0) };
       total += u;
     }
@@ -213,7 +218,9 @@ function readTodayCost(mode = COST_MODE.INTERNAL) {
       try {
         for (const [app, model, req, usd] of query(modelSql)) {
           const u = Number(usd || 0);
-          const appKey = app == null ? '_all' : String(app);
+          let appKey = app == null ? '_all' : String(app);
+          // Normalize app_key same as byApp (e.g., 'claude-desktop' -> 'claude')
+          appKey = APP_TYPE_MAP[appKey] || appKey;
           const modelKey = model == null || model === '' ? '(未知模型)' : String(model);
           if (!byAppModel[appKey]) byAppModel[appKey] = {};
           byAppModel[appKey][modelKey] = {
@@ -404,8 +411,11 @@ function readAvailability({ hours = 24 } = {}) {
   try {
     const rows = query(sql);
     const byApp = {};
+    const APP_TYPE_MAP_AVAIL = { 'claude-desktop': 'claude' };
     for (const [app, total, errors, avgMs] of rows) {
-      const key = app == null ? '_all' : String(app);
+      let key = app == null ? '_all' : String(app);
+      // Normalize: map 'claude-desktop' → 'claude' for UI compatibility
+      key = APP_TYPE_MAP_AVAIL[key] || key;
       const n = Number(total || 0);
       const err = Number(errors || 0);
       byApp[key] = {
@@ -423,7 +433,9 @@ function readAvailability({ hours = 24 } = {}) {
     try {
       const recents = query(recentSql, 8000);
       for (const [app, status, latency] of recents) {
-        const key = app == null ? '_all' : String(app);
+        let key = app == null ? '_all' : String(app);
+        // Normalize: map 'claude-desktop' → 'claude' for UI compatibility
+        key = APP_TYPE_MAP_AVAIL[key] || key;
         if (!byApp[key]) continue;
         const okReq = status != null && status > 0 && status < 400;
         byApp[key].recent.push({

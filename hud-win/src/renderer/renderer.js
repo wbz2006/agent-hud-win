@@ -79,6 +79,28 @@ function fmtMoney(n) {
   return v.toFixed(2);
 }
 
+/**
+ * 余额货币符号：账本 / 鲸鱼路由给的是 ISO 码（CNY、USD…），不是符号。
+ *
+ * 为什么不能写死 ¥：DeepSeek 国际站账户的余额本币是 USD，账本 `accounting.active`
+ * 会变成 "<key指纹>-USD"。写死 ¥ 会把 3.02 美元显示成 3.02 人民币 —— 数字对、
+ * 单位错，属"看起来正常"的错值。未知币种退回 "CODE " 前缀，宁可难看也不误导。
+ */
+const CURRENCY_SYMBOLS = { CNY: '¥', USD: '$', EUR: '€', HKD: 'HK$', JPY: 'JP¥' };
+function currencySymbol(code) {
+  const c = String(code || 'CNY').toUpperCase();
+  return CURRENCY_SYMBOLS[c] || `${c} `;
+}
+
+/**
+ * 积分格式化：整数粒度，只有带小数时才保留一位。
+ * 当前仅用于 WorkBuddy 额度区（余额差值法的显示已停用，保留以备恢复）。
+ */
+function fmtCredit(n) {
+  const v = Math.round((Number(n) || 0) * 10) / 10;
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
 function renderRates(rateLimits) {
   const el = $('rates');
   const list = Array.isArray(rateLimits) ? rateLimits : [];
@@ -612,7 +634,11 @@ function markHtml(r, opts) {
   const tip = compact
     ? ''
     : `<span class="grid-meta">${esc(r.providerLabel || vendor)} · ${state} · 24h ${r.windowCalls || 0} 次${
-        todayCny != null ? ` · 今日 ￥${todayCny.toFixed(2)}` : ''
+        todayCny != null
+          ? ` · 今日 ￥${todayCny.toFixed(2)}`
+          : r.spendTip
+            ? ` · ${r.spendTip}`
+            : ''
       }</span>`;
 
   /*
@@ -624,7 +650,12 @@ function markHtml(r, opts) {
    *
    * 取不到花费时显示破折号而不留空，避免看起来像是"渲染失败"。
    */
-  const costLabel = todayCny != null ? `￥${todayCny.toFixed(2)}` : '&mdash;';
+  const costLabel =
+    todayCny != null
+      ? `￥${todayCny.toFixed(2)}`
+      : r.spendLabel
+        ? r.spendLabel
+        : '&mdash;';
 
   /*
    * 可用性状态 → 胶囊底色。
@@ -651,7 +682,11 @@ function markHtml(r, opts) {
   return `<div class="mark${compact ? '' : ' grid-item'} mark--${barState}" data-state="${barState}" title="${esc(
     r.key
   )} — ${state}${availTip}${
-    todayCny != null ? `；今日 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}` : ''
+    todayCny != null
+      ? `；今日 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}`
+      : r.spendTip
+        ? `；${r.spendTip}`
+        : ''
   }">
     <div class="mark-icon">
       <!-- 不能写死 width/height="22"：容器是 --mark(30px)，SVG 只占 22 就会贴在
@@ -668,8 +703,12 @@ function markHtml(r, opts) {
     </div>
     ${
       compact
-        ? `<span class="mark-cost" title="今日使用金额${
-            todayCny != null ? ` ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}` : '（无数据）'
+        ? `<span class="mark-cost" title="${
+            todayCny != null
+              ? `今日使用金额 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}`
+              : r.spendTip
+                ? r.spendTip
+                : '今日使用金额（无数据）'
           }">${costLabel}</span>`
         : ''
     }
@@ -745,6 +784,39 @@ function sourceMeterItems(summary) {
       appCost && typeof appCost.cny === 'number' ? appCost.cny : todayUsd != null ? todayUsd / 5 : null;
 
     /*
+     * DSH 的 DeepSeek **官方账户余额**。
+     *
+     * 注意口径：这是"还剩多少钱"，不是"今天花了多少"，也不是 WorkBuddy 积分。
+     * DSH 走官方账号，CC Switch 账本里没有它（账本只有 claude-desktop / codex），
+     * 所以第三个环显示余额；没配 Key 时显示 "—" 并在提示里说明原因，绝不显示 0。
+     */
+    const dsBal = summary.deepseekBalance;
+    const dsOk = key === 'dsh' && dsBal && dsBal.ok === true && typeof dsBal.total === 'number';
+    /*
+     * 符号跟随 dsBal.currency（'¥' / '$' / 未知币种给 "CODE "），
+     * 因为账本的 accounting.active 会随账户本币变成 "<指纹>-USD" ——
+     * 写死 ¥ 会把美元余额标成人民币，数字对、单位错，比空着更坏。
+     */
+    const dsSym = dsOk ? currencySymbol(dsBal.currency) : '';
+    const spendLabel = dsOk ? `余额 ${dsSym}${fmtMoney(dsBal.total)}` : null;
+    let spendTip = null;
+    if (dsOk) {
+      const parts = [`DeepSeek 官方余额 ${dsSym}${fmtMoney(dsBal.total)}`];
+      if (typeof dsBal.todayUsage === 'number') parts.push(`今日已用 ${dsSym}${fmtMoney(dsBal.todayUsage)}`);
+      if (dsBal.updatedAt) {
+        const d = new Date(dsBal.updatedAt);
+        parts.push(`更新于 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+      }
+      if (dsBal.stale) parts.push('账本未刷新，数据可能偏旧');
+      if (dsBal.source === 'whale-ledger') parts.push('来源：小鲸鱼账本');
+      else if (dsBal.source === 'whale-http') parts.push(`来源：小鲸鱼路由${dsBal.pluginVersion ? ' v' + dsBal.pluginVersion : ''}`);
+      else if (dsBal.source === 'api') parts.push('来源：官方余额接口');
+      spendTip = parts.join(' · ');
+    } else if (key === 'dsh' && dsBal && dsBal.ok === false && dsBal.reason) {
+      spendTip = `DeepSeek 余额不可用：${dsBal.reason}`;
+    }
+
+    /*
      * 可用性（近 24h 请求成功率）—— 来自 CC Switch 的 status_code 统计。
      *
      * 这与 limited（上游限流）是**两个不同维度**：
@@ -769,6 +841,8 @@ function sourceMeterItems(summary) {
       sessionCount: src.sessionCount || 0,
       todayUsd,
       todayCny,
+      spendLabel,
+      spendTip,
       key: meta.label,
       providerLabel: meta.label,
       // 可用性附加信息（供 mark 底色与悬停提示使用）

@@ -61,6 +61,10 @@ function fill(cfg) {
   $('relayBalanceField').value = relay.balanceField || 'quota';
   $('relayUsedField').value = relay.usedField || 'used_quota';
 
+  // DeepSeek 官方余额用的 API Key（sk- 开头，存 config.json）
+  const dsKeyEl = $('deepseekApiKey');
+  if (dsKeyEl) dsKeyEl.value = current.deepseekApiKey || '';
+
   // 数据源开关（含每源的会话数，便于判断该源是否真的有用）
   const enabled = current.enabledSources || { claude: true, codex: true, dsh: true };
   const counts = current.sourceCounts || {};
@@ -103,6 +107,11 @@ function read() {
     // 【Beta】免费模型限流监控（默认关闭，用户显式开启才存 true）
     betaRateFreeModel: $('betaRateFreeModel').checked,
     enabledSources: enabled,
+    // DeepSeek 官方余额的 API Key（空字符串 = 未配置，UI 显示 "—"）
+    deepseekApiKey: (() => {
+      const el = $('deepseekApiKey');
+      return el ? el.value.trim() : '';
+    })(),
     relay: {
       baseUrl: $('relayBaseUrl').value.trim(),
       quotaPath: $('relayQuotaPath').value.trim() || '/api/user/self',

@@ -99,6 +99,7 @@ npm start          # 开发运行
 npm run pack       # 打包成独立 exe（build/AgentHUD-win32-x64/）
 npm run dist       # 打包 + 压成 dist/AgentHUD-<版本>-win32-x64.zip（发版用）
 npm test           # 跑测试（探测层 / 降级 / 计价 / 静态防护）
+npm run check:whale  # 小鲸鱼插件升级后核对余额取数契约（未安装则整组跳过）
 ```
 
 打包产物不依赖 Node / npm / 本目录（应用打进 `resources/app.asar`，运行时只读取本地 agent 数据）。
@@ -126,9 +127,14 @@ OV/EV 证书或 Azure Trusted Signing。自签名的价值在于：**能验证�
 
 ## 隐私
 
-**纯本地运行，不联网、不上传。** 所有数据都从本机 agent 的会话文件与 CC Switch 的本地
-SQLite 账本读取。唯一的可选网络请求是中转站余额接口 —— 需要你在设置里**显式填写**
-Base URL 与 Token 才会发起；不填就完全没有请求。
+**纯本地运行，只读本机数据，不上传任何内容。** 所有用量都从本机 agent 的会话文件与 CC Switch 的本地
+SQLite 账本读取。会发起的网络请求只有两种，且**都需要你显式配置**：
+
+- **中转站余额接口** —— 只有在设置里填了 Base URL 与 Token 才会请求；
+- **DeepSeek 官方余额接口** —— 只有在本地拿不到余额（没装小鲸鱼插件 / 账本读不到）**且**你填了 API Key 时才会请求。
+
+第三环的余额按「小鲸鱼账本（`~/.dsh/.dshw-usage.json`，离线可读）→ 小鲸鱼在 DSH 上注册的本机只读路由
+（`127.0.0.1`，不出网）→ 官方余额接口」依次取数，三级都失败就显示「不可用」并说明原因，**不会用 0 顶替**。
 
 ## 项目结构
 
@@ -141,6 +147,7 @@ hud-win/
       claude-source.js / codex-source.js / dsh-source.js
       ratelimit.js     限流判定（Beta）
       quota.js / relay.js
+      deepseek-balance.js  DeepSeek 余额（鲸鱼账本 → 本机路由 → 官方接口，三级降级）
     config.js        配置持久化（原子写入，零依赖）
   src/renderer/      UI（index.html / styles.css / renderer.js）
     assets/          品牌 logo + 应用图标

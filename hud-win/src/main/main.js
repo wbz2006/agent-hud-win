@@ -159,9 +159,15 @@ function applyDock() {
   // 横排时用当前窗口宽度作为内容宽度（由渲染层通过 hud:measure 回报更新）
   const r = dockRect(dock, screen.getPrimaryDisplay().workArea, contentWidth);
   const wasExpanded = expanded;
-  win.setBounds(r);
-  // 形状变了，展开态失效，收回
-  if (wasExpanded) setExpanded(false);
+  if (wasExpanded) {
+    // 展开态下只更新位置，不压缩窗口尺寸——否则保存设置时会把已展开的
+    // 卡片压回胶囊宽度，而渲染层的 panelOpen 状态未同步，导致 bar 变胶囊
+    // 而图标仍停留在三环展开态（点 X 才恢复）。
+    const b = win.getBounds();
+    win.setBounds({ x: r.x, y: r.y, width: b.width, height: b.height });
+  } else {
+    win.setBounds(r);
+  }
   // 把布局朝向告诉渲染层，让 CSS 切换成竖排
   if (win.webContents && !win.webContents.isDestroyed()) {
     win.webContents.send('hud:layout', { vertical: isVerticalDock(dock), dock });

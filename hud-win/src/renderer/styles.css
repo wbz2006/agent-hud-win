@@ -245,10 +245,17 @@ body.vertical .mark[data-state='unavailable']:hover::after {
   transition: left 180ms ease, transform 180ms ease;
   -webkit-app-region: no-drag;
 }
-/* 悬停：环靠左让位给统计与按钮 */
+/*
+ * 悬停：环靠左让位给统计与按钮。
+ *
+ * 必须**回归 flex 子项**（position: static）而不是继续绝对定位：
+ * 金额标签长度会变（「￥1.18」 vs 「0 积分」 vs 「—」），绝对定位的 marks
+ * 不参与布局，标签一长就直接压在右侧统计文字上（实测「0 积分」与「91M」重叠）。
+ * 变成 flex 子项后宽度自然被计入，统计被自动推到右边。
+ */
 body.hovering .marks {
-  left: var(--inset-left);
-  transform: translateY(-50%);
+  position: static;
+  transform: none;
 }
 
 /* cell = 环 + 金额，间距 = labelSpacing */

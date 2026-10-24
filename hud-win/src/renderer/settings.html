@@ -140,6 +140,21 @@
         </div>
       </section>
 
+      <!-- 3.5 DeepSeek 官方余额（鲸鱼账本优先，API Key 只是兜底） -->
+      <section class="sect">
+        <h2>DeepSeek 官方余额</h2>
+        <p class="hint">
+          悬浮条第三个环显示 DeepSeek <strong>官方账户余额</strong>。默认直接读取小鲸鱼桌宠的
+          记账文件（<code>~/.dsh/.dshw-usage.json</code>）—— 它同时覆盖 API Key 与
+          DSH 账号登录两条取数路径，所以<strong>不需要在这里填任何东西</strong>。
+        </p>
+        <div class="hint">仅当没装小鲸鱼插件时，才需要填下面的 Key 作为兜底（留空即可）。</div>
+        <div class="row">
+          <span class="k">API Key（可选）</span>
+          <input type="text" id="deepseekApiKey" placeholder="sk-...（留空自动读鲸鱼账本）" />
+        </div>
+      </section>
+
       <!-- 4. 采集间隔 -->
       <section class="sect">
         <h2>采集</h2>

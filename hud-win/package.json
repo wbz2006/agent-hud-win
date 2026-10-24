@@ -8,7 +8,8 @@
     "dev": "electron . --dev",
     "pack": "node pack.js",
     "dist": "node dist.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "check:whale": "node --test test/whale-contract.test.js"
   },
   "keywords": [
     "electron",
