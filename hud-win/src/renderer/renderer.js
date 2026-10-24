@@ -917,7 +917,15 @@ function measureBar() {
   requestAnimationFrame(() => {
     if (drag) return;
     const need = measureBarNeed();
-    if (need) window.hud.measure(need);
+    if (need) {
+      /*
+       * 必须告诉主进程这次量的是哪种状态：悬停态量到的是加宽值（露出统计与
+       * 按钮），主进程只能把它当"当前宽度"，不能记成收起态宽度——否则拖动
+       * 落回时用的是加宽值，用户就在拖一条"完全展开"的大胶囊。
+       */
+      const hovering = document.body.classList.contains('hovering') || panelOpen;
+      window.hud.measure(need, hovering);
+    }
   });
 }
 
@@ -1436,14 +1444,21 @@ function collapseForDrag() {
     expandBtn.title = '展开详情面板';
   }
   /*
-   * 立即重测内容宽度：悬停加宽过的胶囊（露出统计与按钮）直接被拿起来会一直
-   * 保持加宽状态直到松手。先量回收起态宽度，主进程在松手重排时就能把胶囊
-   * 缩回贴合内容的宽度（拖动期间窗口尺寸被冻结，不会中途跳）。
+   * 这里不再重测宽度：收起态宽度由主进程的 collapsedWidth 记着
+   * （每次非悬停测量更新），拿起时它直接按那个宽度收窗口。
+   * 在拖动路径上现量不可靠——悬停态会量到加宽值，启动初期 .marks
+   * 还没渲染会量到 24px（详见 armDrag 注释）。
    */
-  measureBar();
 }
 
-/** 拿起：虚线边框出现，冻结悬停/测量重排，主进程落回收起态胶囊。 */
+/**
+ * 拿起：虚线边框出现，冻结悬停/测量重排，主进程落回收起态胶囊。
+ *
+ * 收起宽度不用这里量、也不传给主进程：主进程记着 collapsedWidth
+ * （最近一次非悬停测量），拖动落回时用它。在这儿现量踩过两次坑——
+ * 悬停态量到加宽值（拖着"完全展开"的大胶囊），启动初期 .marks 还没渲染
+ * 量到 24px（胶囊被夹成 100px 窄条）。
+ */
 function armDrag() {
   if (!drag || drag.armed) return;
   drag.armed = true;
@@ -1533,9 +1548,11 @@ function endDrag(e) {
   if (drag.raf) cancelAnimationFrame(drag.raf);
   drag = null;
   document.body.classList.remove('dragging');
-  // 没拿起、或拿起后没拖动（慢速单击）都不提交落点
-  if (armed && moved && window.hud && window.hud.dragEnd) {
-    window.hud.dragEnd().catch(() => {});
+  // 没拿起、或拿起后没拖动（慢速单击）都不提交落点；
+  // 但拿起过就**必须**通知主进程结束拖动（commit=false 不写盘）——
+  // 否则主进程的 dragging 永远是 true，悬停与窗口自适应从此失效（实测）。
+  if (armed && window.hud && window.hud.dragEnd) {
+    window.hud.dragEnd(moved).catch(() => {});
   }
   // 松手后重新量一次宽度：拖动期间禁了测量，朝向也可能已经翻转
   measureBar();

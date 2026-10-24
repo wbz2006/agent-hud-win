@@ -22,8 +22,12 @@ contextBridge.exposeInMainWorld('hud', {
   getConfig: () => ipcRenderer.invoke('hud:get-config'),
   /** 设置保存后的通知（载荷为新配置，渲染层据此刷新预算等展示参数）。 */
   onConfigChanged: (cb) => ipcRenderer.on('hud:config-changed', (_e, cfg) => cb(cfg)),
-  /** 回报悬浮条内容宽度（marks 数量变化时窗口宽度需自适应）。 */
-  measure: (w) => ipcRenderer.invoke('hud:measure', w),
+  /**
+   * 回报悬浮条内容宽度（marks 数量变化时窗口宽度需自适应）。
+   * hovering=true 表示这是悬停加宽态的宽度：主进程只把非悬停值记成
+   * 收起态宽度（拖动落回时要用），两者的用途不同。
+   */
+  measure: (w, hovering) => ipcRenderer.invoke('hud:measure', w, !!hovering),
   refresh: () => ipcRenderer.invoke('hud:refresh'),
   /**
    * 切换展开态。
@@ -43,11 +47,17 @@ contextBridge.exposeInMainWorld('hud', {
   /** 查询热键注册状态（设置页展示）。 */
   getHotkey: () => ipcRenderer.invoke('hud:get-hotkey'),
   /**
-   * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手落盘）。
-   * dragStart 让主进程落回收起态并冻结自动重排；dragMove 走增量（每帧一次）；
-   * dragEnd 才把 dock='free' + freePos 写进 config.json。
+   * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手吸附到最近的边）。
+   * dragStart 让主进程落回收起态矩形（宽度取它自己记着的 collapsedWidth，
+   * 不能现量：悬停态量到加宽值、启动初期量到空内容）。dragMove 走增量
+   * （每帧一次），拖动中还会做横竖翻转与吸附边预测；dragEnd 才把
+   * dock='top'|'left'|'right' 写进 config.json。
    */
   dragStart: () => ipcRenderer.invoke('hud:drag-start'),
   dragMove: (dx, dy) => ipcRenderer.send('hud:drag-move', dx, dy),
-  dragEnd: () => ipcRenderer.invoke('hud:drag-end'),
+  /**
+   * 松手。commit=true 才把吸附边写进 config.json；但拿起过就一定要调用它，
+   * 否则主进程会一直停在"拖动中"，悬停与窗口自适应全部失效。
+   */
+  dragEnd: (commit) => ipcRenderer.invoke('hud:drag-end', commit === true),
 });

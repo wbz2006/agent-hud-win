@@ -167,11 +167,30 @@ const SETTINGS_HTML = read('src', 'renderer', 'settings.html');
 test('主进程注册了拖动三段 IPC，松手时写 dock（吸附边）', () => {
   assert.match(MAIN_CODE, /ipcMain\.handle\(\s*'hud:drag-start'/);
   assert.match(MAIN_CODE, /ipcMain\.on\(\s*'hud:drag-move'/);
-  assert.match(MAIN_CODE, /ipcMain\.handle\(\s*'hud:drag-end'/);
+  assert.match(MAIN_CODE, /ipcMain\.handle\(\s*'hud:drag-end',\s*\(_e, commit\)/);
   // 松手只写停靠边，不再保存任意坐标
   assert.match(MAIN_CODE, /config\.save\(\{\s*dock\s*\}\)/);
   assert.doesNotMatch(MAIN_CODE, /freePos/);
   assert.doesNotMatch(MAIN_CODE, /dock:\s*'free'/);
+});
+
+test('拿起过就必须结束拖动，只有真拖过才写盘', () => {
+  // 慢速单击（按住 300ms 拿起但没动）也走 dragEnd(commit=false)：
+  // 否则主进程 dragging 常驻 true，悬停轮询与 hud:measure 永久被挡
+  assert.match(PRELOAD, /dragEnd:\s*\(commit\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-end',\s*commit === true\)/);
+  assert.match(RENDERER_CODE, /if \(armed && window\.hud && window\.hud\.dragEnd\)/);
+  assert.match(RENDERER_CODE, /window\.hud\.dragEnd\(moved\)/);
+  const fn = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-end'"));
+  // 截到下一个顶层语句（早退分支里也有 }\n，不能按它切）
+  const end = Math.min(
+    ...[fn.indexOf('\nipcMain.'), fn.indexOf('\napp.on('), fn.indexOf('\nfunction ') ].filter((i) => i > 0)
+  );
+  const body = fn.slice(0, end > 0 ? end : 2000);
+  assert.match(body, /dragging = false;/);
+  assert.match(body, /if \(commit === true\) \{/);
+  // 不提交的分支里不能再出现写盘
+  const noCommit = body.slice(body.indexOf('if (commit === true)'));
+  assert.doesNotMatch(noCommit.slice(noCommit.indexOf('applyDock')), /config\.save/);
 });
 
 test('拖动中按预测吸附边就地翻转朝向（横条 ↔ 竖条）', () => {
@@ -187,6 +206,19 @@ test('拖动中按预测吸附边就地翻转朝向（横条 ↔ 竖条）', () 
 test('开始拖动时记住当前停靠边，松手用它兜底', () => {
   assert.match(MAIN_CODE, /dragZone = layout\.dock/);
   assert.match(MAIN_CODE, /const dock = dragZone \|\| dragGeo\.zoneOf/);
+});
+
+test('拖动落回用「最近一次非悬停测量」的收起宽度，不在拿起时现量', () => {
+  // 悬停态的 contentWidth 是加宽值（实测 284/540），拿它收窗口就等于
+  // 拖着一条"完全展开"的大胶囊；而在拿起瞬间现量又会在启动初期
+  // （.marks 还没渲染）量到 24px，被夹成 100px 窄条。
+  assert.match(MAIN_CODE, /let collapsedWidth = BAR\.width;/);
+  assert.match(MAIN_CODE, /if \(!hovering\) collapsedWidth = next;/);
+  const start = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-start'"));
+  const startBody = start.slice(0, start.indexOf('ipcMain.on'));
+  assert.match(start, /'hud:drag-start',\s*\(\)\s*=>/);
+  assert.match(startBody, /contentWidth = clampWidth\(collapsedWidth\);/);
+  assert.doesNotMatch(startBody, /widthHint|Number\(width/);
 });
 
 test('停靠边决定朝向与展开方向，量宽度时忽略竖排', () => {
@@ -205,17 +237,28 @@ test('拖动期间冻结 hover / 测量 / 展开，防止胶囊抖动', () => {
 
 test('preload 暴露 dragStart / dragMove / dragEnd', () => {
   assert.match(PRELOAD, /dragStart:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-start'\)/);
+  // 收起宽度由主进程 collapsedWidth 提供，测量上报带"是否悬停"标记
+  assert.match(PRELOAD, /measure:\s*\(w,\s*hovering\)\s*=>\s*ipcRenderer\.invoke\('hud:measure',\s*w,\s*!!hovering\)/);
+  assert.match(PRELOAD, /collapsedWidth/);
   assert.match(PRELOAD, /dragMove:\s*\(dx,\s*dy\)\s*=>\s*ipcRenderer\.send\('hud:drag-move',\s*dx,\s*dy\)/);
-  assert.match(PRELOAD, /dragEnd:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-end'\)/);
 });
 
 test('渲染层拖动全程：pointerdown/move/up 都挂在胶囊上，松手提交', () => {
   assert.match(RENDERER_CODE, /bar\.addEventListener\('pointerdown',\s*onBarPointerDown\)/);
   assert.match(RENDERER_CODE, /bar\.addEventListener\('pointermove',\s*onBarPointerMove\)/);
   assert.match(RENDERER_CODE, /bar\.addEventListener\('pointerup',\s*endDrag\)/);
+  // 拿起时不再现量宽度：主进程按 collapsedWidth（最近一次非悬停测量）收窗口
   assert.match(RENDERER_CODE, /dragStart\(\)/);
+  assert.doesNotMatch(RENDERER_CODE, /dragStart\(need/);
+  const armFn = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function armDrag('));
+  const armBody = armFn.slice(0, armFn.indexOf('\n}'));
+  assert.match(armBody, /collapseForDrag\(\)/);
+  assert.doesNotMatch(armBody, /measureBarNeed/);
+  // 测量上报必须带悬停标记，否则加宽值会被主进程当成收起态宽度
+  assert.match(RENDERER_CODE, /window\.hud\.measure\(need, hovering\)/);
+  assert.match(RENDERER_CODE, /const hovering = document\.body\.classList\.contains\('hovering'\) \|\| panelOpen/);
   assert.match(RENDERER_CODE, /dragMove\(dx,\s*dy\)/);
-  assert.match(RENDERER_CODE, /dragEnd\(\)/);
+  assert.match(RENDERER_CODE, /dragEnd\(moved\)/);
   assert.match(RENDERER_CODE, /classList\.add\('dragging'\)/);
   assert.match(RENDERER_CODE, /classList\.remove\('dragging'\)/);
 });
@@ -227,10 +270,13 @@ test('按住超过阈值才拿起（6px / 300ms），按钮不参与拖动', () 
   assert.match(RENDERER_CODE, /setTimeout\(armDrag,\s*DRAG_HOLD_MS\)/);
 });
 
-test('拿起后没拖动就松手不提交（慢速单击不该改变停靠边）', () => {
+test('拿起后没拖动就松手不提交，但一定结束拖动（慢速单击不该改变停靠边）', () => {
   const fn = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function endDrag('));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /if\s*\(armed\s*&&\s*moved\s*&&/);
+  // 提交条件仍是 armed && moved，只是把它做成 dragEnd(commit) 的参数
+  assert.match(body, /if\s*\(armed\s*&&\s*window\.hud\s*&&\s*window\.hud\.dragEnd\)/);
+  assert.match(body, /dragEnd\(moved\)/);
+  assert.doesNotMatch(body, /if\s*\(armed\s*&&\s*moved\s*&&/);
   assert.match(RENDERER_CODE, /drag\.moved = true/);
 });
 
@@ -244,6 +290,11 @@ test('测量胶囊宽度时关掉过渡（否则量到 width 过渡的中间值�
 test('拖动中显示虚线边框，并且不显示面板', () => {
   assert.match(CSS_CODE, /body\.dragging \.bar::before/);
   assert.match(CSS_CODE, /border:\s*1\.5px dashed/);
+  // 虚线画在胶囊内侧（inset 2px）：画在外扩位置会被窗口边界裁掉，
+  // 而胶囊永远贴着屏幕边（上下左右 6px 边距），靠边那侧的虚线就没了
+  const dashRule = CSS_CODE.slice(CSS_CODE.indexOf('body.dragging .bar::before'));
+  assert.match(dashRule.slice(0, dashRule.indexOf('}')), /inset:\s*2px/);
+  assert.doesNotMatch(dashRule.slice(0, dashRule.indexOf('}')), /inset:\s*-/);
   assert.match(CSS_CODE, /border-radius:\s*999px/);
   assert.match(CSS_CODE, /body\.dragging \.panel \{ display: none; \}/);
   // 抓取光标

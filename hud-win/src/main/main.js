@@ -94,6 +94,15 @@ let hoverTimer = null;
  * marks 数量随模型数变化，固定宽度会导致内容被拉伸或截断。
  */
 let contentWidth = BAR.width;
+/*
+ * 最近一次**非悬停**状态下的内容宽度（收起态真实宽度）。
+ * 拖动落回胶囊矩形时必须用它，不能用 contentWidth：
+ *   - contentWidth 在悬停态是加宽值（露出统计与按钮，实测 284/540），
+ *     拖动的就是这条大胶囊（用户反馈"在上边移动时总是会完全展开"）；
+ *   - 拿起那一刻现量也不可靠：启动初期数据还没渲染，.marks 宽度为 0，
+ *     实测量到 24px，被夹到下限后胶囊永久变成 100px 窄条。
+ */
+let collapsedWidth = BAR.width;
 /**
  * 是否正在被用户按住拖动（自由定位）。
  *
@@ -795,17 +804,21 @@ ipcMain.handle('hud:get-layout', () => {
  * 渲染层回报悬浮条内容宽度（仅横排使用）。
  * 宽度变化超过 1px 才重新定位，避免每次渲染都抖动。
  *
+ * 第二个参数 hovering 表示这条测量值来自悬停态（露出统计与按钮的加宽值）：
+ * 只有非悬停的测量才写 collapsedWidth（收起态宽度），拖动落回时用它。
+ *
  * 竖排必须直接忽略：竖条的宽高由 SIDE_THICKNESS / SIDE_RUN 固定，
  * 一旦 applyDock() 被触发就会把窗口强制收回收起尺寸 ——
  * 实测症状是悬停展开时宽 78、高 195 反复横跳，面板根本展不开。
  */
-ipcMain.handle('hud:measure', (_e, width) => {
+ipcMain.handle('hud:measure', (_e, width, hovering) => {
   const layout = layoutOf();
   if (layout.vertical) return SIDE_THICKNESS;
   // 拖动中不接测量值：翻转朝向的瞬间渲染层还按横排量，数值会偏小
   if (dragging) return contentWidth;
 
   const next = clampWidth(width);
+  if (!hovering) collapsedWidth = next;
   if (Math.abs(next - contentWidth) > 1) {
     contentWidth = next;
     // 展开态下不重新定位：面板已经占好了位置，再调 applyDock 会把窗口按
@@ -907,9 +920,10 @@ ipcMain.handle('hud:quit', () => {
  *   2. 胶囊中心靠近左右边时**就地翻成竖条**（以中心为基准，不会横漂），
  *      靠近顶部时翻回横条 —— 松手前就能看到最终形状。
  *
- *   hud:drag-start → 落回收起态胶囊矩形，立起 dragging 标志（hover/measure/expand 全部让路）
+ *   hud:drag-start → 落回收起态胶囊矩形（宽度取 collapsedWidth），立起 dragging 标志
  *   hud:drag-move  → 增量移动 + 预测吸附边 + 必要时翻转朝向
- *   hud:drag-end   → 写盘 dock=<最近的边>，再按停靠矩形重排一次
+ *   hud:drag-end(commit) → 拿起过就必须调（关 dragging 标志）；
+ *                    commit=true 才写盘 dock=<最近的边>，再按停靠矩形重排
  *
  * 用增量而不是绝对光标坐标：窗口本身在动，增量对 DPI 缩放与多屏都是稳的；
  * 渲染层用 e.screenX/screenY（CSS 像素）与主进程的 DIP 坐标同一坐标系。
@@ -920,6 +934,13 @@ let morphShift = null;
 
 ipcMain.handle('hud:drag-start', () => {
   if (!win || win.isDestroyed()) return { ok: false };
+  /*
+   * 落回收起态宽度：必须用 collapsedWidth（最近一次非悬停测量），
+   * 不能用 contentWidth —— 悬停时它是加宽值，拖着一条"完全展开"的大胶囊
+   * 在屏幕上滑（用户反馈）。也不在拿起瞬间现量：启动初期 .marks 还是空的，
+   * 量到 24px 会把胶囊永久压成 100px 窄条（实测）。
+   */
+  contentWidth = clampWidth(collapsedWidth);
   const layout = layoutOf();
   dragging = true;
   dragZone = layout.dock;
@@ -978,7 +999,14 @@ ipcMain.on('hud:drag-move', (_e, dx, dy) => {
   }
 });
 
-ipcMain.handle('hud:drag-end', () => {
+/**
+ * 结束拖动。commit=true 才写盘（真的拖过）；
+ * 但无论是否提交都必须把 dragging 关掉 —— 拿起过（按住 300ms 或移动过阈值）
+ * 却没拖动就松手时，主进程的 dragging 若留着 true，悬停轮询与 hud:measure
+ * 会一直被"拖动中"门禁挡掉，胶囊从此不再加宽、也不再响应光标（实测症状：
+ * 慢速单击一次后 hover 永久失效），直到下一次拖动才恢复。
+ */
+ipcMain.handle('hud:drag-end', (_e, commit) => {
   if (!win || win.isDestroyed()) {
     dragging = false;
     dragZone = null;
@@ -990,9 +1018,14 @@ ipcMain.handle('hud:drag-end', () => {
   const b = win.getBounds();
   const dock = dragZone || dragGeo.zoneOf(b, screen.getDisplayMatching(b).workArea);
   dragZone = null;
-  const saved = config.save({ dock });
-  applyDock(); // 吸附到最近的边（居中停靠），顺带把朝向摆正
-  return saved;
+  if (commit === true) {
+    const saved = config.save({ dock });
+    applyDock(); // 吸附到最近的边（居中停靠），顺带把朝向摆正
+    return saved;
+  }
+  // 没拖过：不改配置，只把窗口收回原来的停靠矩形（抖了一下也回到原位）
+  applyDock();
+  return config.load();
 });
 
 /**

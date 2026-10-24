@@ -13,6 +13,8 @@ error.log
 # 调试截图与临时脚本
 shot-*.png
 _*.ps1
+# 例外：_realcheck.js（拖动实机验证）依赖真实光标驱动脚本，两者一起入库
+!_realmouse.ps1
 _*.cjs
 anim/
 

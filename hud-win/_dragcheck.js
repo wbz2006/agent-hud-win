@@ -107,7 +107,7 @@ async function geom(cdp) {
     const cls = document.body.className;
     return {
       sx: window.screenX, sy: window.screenY, iw: innerWidth, ih: innerHeight,
-      bx: b.x, by: b.y, bw: b.width, bh: b.height,
+      aw: screen.availWidth, bx: b.x, by: b.y, bw: b.width, bh: b.height,
       dragging: cls.includes('dragging'),
       hovering: cls.includes('hovering'),
       vertical: cls.includes('vertical'),
@@ -194,6 +194,28 @@ async function jsDrag(cdp, to, steps, onStep) {
   await sleep(500);
 }
 
+/** 等窗口尺寸稳定（收起态）：启动后首帧会把默认宽收到内容宽。 */
+async function waitCollapsed(cdp, ms) {
+  const until = Date.now() + (ms || 3000);
+  for (;;) {
+    const g = await geom(cdp);
+    if (g.iw <= 170) return g;
+    if (Date.now() > until) return g;
+    await sleep(120);
+  }
+}
+
+/** 等悬停加宽生效（hovering → 量宽 → 主进程改窗口是异步的，不能立刻读）。 */
+async function waitWidened(cdp, ms) {
+  const until = Date.now() + (ms || 2500);
+  for (;;) {
+    const g = await geom(cdp);
+    if (g.iw > 200) return g;
+    if (Date.now() > until) return g;
+    await sleep(120);
+  }
+}
+
 async function main() {
   const list = JSON.parse(await get(`http://127.0.0.1:${PORT}/json/list`));
   const page = list.find((p) => p.type === 'page');
@@ -205,29 +227,41 @@ async function main() {
   console.log('初始:', JSON.stringify(g));
 
   if (PHASE === 'A') {
-    // ---- A. 按住不动再松手：不移动、不换边 ----
-    // 先把悬停态稳定下来再取基准：启动后第一次测量会把窗口从默认宽缩到内容宽，
-    // 那次重排跟"点击有没有移动胶囊"是两码事。
+    // ---- A. 按住不动再松手：不换边、不位移 ----
+    /*
+     * 拿起会让主进程立刻把窗口从悬停加宽收回收起宽度（这是修过两次的行为），
+     * 所以"悬停时的位置"不能当基准：松开后应回到**顶部居中的收起态矩形**上。
+     * 这里直接按"收起态 + 顶边居中"的几何判据断言，不依赖按下前的状态。
+     */
     let press = await pressPoint(cdp);
     await cdp.mouse('mouseMoved', press.x, press.y, 0);
-    await sleep(400);
-    g = await geom(cdp);
-    const baseX = g.sx;
-    const baseY = g.sy;
+    const hovered = await waitWidened(cdp);
+    check('悬停把胶囊加宽（统计与按钮露出来）', hovered.iw > 200, `innerWidth=${hovered.iw}`);
     press = await pressPoint(cdp);
     await cdp.mouse('mousePressed', press.x, press.y, 1);
     await sleep(450);
     await cdp.mouse('mouseReleased', press.x, press.y, 0);
-    await sleep(450);
-    g = await geom(cdp);
-    check('按住 450ms 不动再松手：窗口没有移动', g.sx === baseX && g.sy === baseY, `${baseX},${baseY} → ${g.sx},${g.sy}`);
+    await sleep(500);
+    let g = await geom(cdp);
+    const expectX = (g.aw - g.iw) / 2;
+    check(
+      '按住 450ms 不动再松手：回到顶部居中的收起态（不算拖动）',
+      g.iw <= 170 && g.sy === 6 && Math.abs(g.sx - expectX) <= 2,
+      `${g.sx},${g.sy} w${g.iw}（期望 x≈${Math.round(expectX)} y=6 且 w≤170）`
+    );
     check('按住不动再松手：停靠边不变（慢速单击不算拖动）', cfgDock() === 'top', 'dock=' + cfgDock());
     check('单击后没有 dragging 残留', g.dragging === false);
 
     // ---- B. 按钮不参与拖动 ----
     await reenter(cdp, g);
+    await waitWidened(cdp);
+    /*
+     * 加宽过程中 .bar 的 width 过渡还没走完时，flex 末端溢出会把按钮摆到
+     * 负坐标（实测 -22），等布局稳定再取按钮位置。
+     */
+    await sleep(380);
     g = await geom(cdp);
-    check('悬停后 ☰ 按钮有实际尺寸', g.dx.x > 0 && g.dx.y > 0, `button@${g.dx.x},${g.dx.y}`);
+    check('悬停后 ☰ 按钮有实际尺寸', g.dx.x >= 0 && g.dx.y > 0, `button@${g.dx.x},${g.dx.y} w${g.iw}`);
     await cdp.mouse('mouseMoved', g.dx.x, g.dx.y, 0);
     await sleep(120);
     await cdp.mouse('mousePressed', g.dx.x, g.dx.y, 1);

@@ -72,22 +72,28 @@ html, body {
   -webkit-app-region: no-drag;
 }
 
-/* ---------- 拖动胶囊（自由定位） ---------- */
+/* ---------- 拖动胶囊（按住 → 虚线 → 拖动 → 松手吸附） ---------- */
 /*
  * 手感对齐原项目 HUDDragWindowController：按住左键胶囊被"拿起"，
- * 虚线边框出现（原项目 CAShapeLayer：lineDash [4,3]、白色 0.9、圆角跟胶囊），
- * 松手落回并持久化。悬停时抓手提示可拖，拖动中抓取手。
+ * 虚线边框出现（原项目 CAShapeLayer：lineDash [4,3]、白色 0.9、inset 2 画在
+ * 胶囊**内侧**），松手落回并吸附到最近的边。悬停时抓手提示可拖，拖动中抓取手。
  *
  * 悬停才显示 grab：平时不抢光标，和原项目"静止时不接管指针"的决定一致。
  */
 body.hovering .bar { cursor: grab; }
 body.dragging .bar { cursor: grabbing; }
 
+/*
+ * 虚线必须画在胶囊**内侧**（inset 2px），不能外扩：
+ * 窗口矩形正好就是胶囊本身，画在 -6px 处的边框落在窗口外，会被直接裁掉——
+ * 而胶囊永远贴在屏幕边上（上 6px / 左右 6px 边距），靠边那一侧的虚线于是
+ * 整条看不见（用户反馈："靠近屏幕边框的位置的虚线无法显示"）。
+ * 内侧描边不受窗口边界影响，任何位置都完整可见，也与原项目的 inset 2 一致。
+ */
 body.dragging .bar::before {
   content: '';
   position: absolute;
-  /* 外扩 6px：虚线框套在胶囊外面，不与胶囊自身 1px 描边打架 */
-  inset: -6px;
+  inset: 2px;
   border: 1.5px dashed rgba(255, 255, 255, 0.9);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.025); /* 原项目 outline.fillColor */
