@@ -100,34 +100,23 @@ html, body {
   /*
    * 可用性底色过渡（见下方 body[data-avail] 规则）。
    *
-   * 用户要求「不可用时暗红浮动、正常时深绿浮动」，但主色调必须仍是黑色。
-   * 所以这里不改 background 本身，而是过渡一层很淡的 box-shadow 内发光 +
-   * 背景色混合比例，视觉上是"黑胶囊透出一点红/绿"。
+   * 只有「不可用 → 暗红」一种染色（正常态绿底已于 2026-10-24 按用户要求删除）。
    * 过渡放在 .bar 上，避免状态切换时颜色跳变。
    */
   transition: background-color 600ms ease, box-shadow 600ms ease;
 }
 
 /*
- * ---------- 胶囊可用性状态（用户 2026-10-21 要求）----------
+ * ---------- 胶囊可用性状态 ----------
  *
  * 判定来源：CC Switch 账本近 24h 的 status_code 成功率（ccswitch.readAvailability）。
  * 聚合与挂类逻辑在 renderMarks()，这里只负责呈现。
  *
- * 设计要点：
- *   1. 主色调仍是黑色 —— 底色只叠加极淡的红/绿，不是整条染色
- *   2. 「浮动」用缓慢的呼吸动画（4s 一个周期），不做闪烁，
- *      长时间盯着看不会烦躁，也不会误读成"正在报警"
- *   3. 未知状态（无样本）保持原样，不伪装成"正常"
+ * 2026-10-24 用户要求去掉正常态的绿色底色：healthy 不再染色，回到纯黑胶囊
+ * （视觉上与 unknown 一致），只保留「不可用 → 暗红呼吸」这一种告警。
+ * data-avail='healthy' 这个值仍由 renderMarks 写出（mark 的状态类与悬停提示
+ * 都依赖它），只是不再为它挂任何底色/动画规则。
  */
-
-/* 正常：深绿浮动 */
-body[data-avail='healthy'] .bar {
-  background-color: rgba(10, 32, 22, 0.86);
-  box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.35),
-              0 0 18px rgba(61, 220, 132, 0.18);
-  animation: bar-breathe-ok 4s ease-in-out infinite;
-}
 
 /* 不可用：暗红浮动 */
 body[data-avail='unavailable'] .bar {
@@ -137,26 +126,11 @@ body[data-avail='unavailable'] .bar {
   animation: bar-breathe-bad 3.2s ease-in-out infinite;
 }
 
-/* 无样本：保持原来的黑胶囊，不做任何额外染色 */
-body[data-avail='unknown'] .bar {
-  animation: none;
-}
-
 /*
  * 呼吸动画：只动外层光晕强度与透明度，不动尺寸。
  * 用 0.18 → 0.34 的幅度，够被注意到又不刺眼。
+ * （正常态的 bar-breathe-ok 已随绿底一起删除，2026-10-24）
  */
-@keyframes bar-breathe-ok {
-  0%, 100% {
-    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.30),
-                0 0 14px rgba(61, 220, 132, 0.14);
-  }
-  50% {
-    box-shadow: inset 0 0 0 1px rgba(61, 220, 132, 0.45),
-                0 0 22px rgba(61, 220, 132, 0.26);
-  }
-}
-
 @keyframes bar-breathe-bad {
   0%, 100% {
     box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.38),
@@ -209,7 +183,6 @@ body.vertical .mark[data-state='unavailable']:hover::after {
 
 /* 系统开启「减少动态效果」时停掉呼吸，只保留静态底色 */
 @media (prefers-reduced-motion: reduce) {
-  body[data-avail='healthy'] .bar,
   body[data-avail='unavailable'] .bar {
     animation: none;
   }

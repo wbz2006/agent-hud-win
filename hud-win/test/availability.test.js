@@ -3,13 +3,14 @@
 /**
  * 可用性统计与胶囊配色测试（静态防护）。
  *
- * 需求（用户 2026-10-21）：
- *   - 不可用时胶囊底色变暗红并浮动，悬停图标显示不可用提示
- *   - 正常时胶囊底色为深绿并浮动
- *   - 主色调仍是黑色（只做淡叠加，不整条染色）
+ * 需求：
+ *   - 2026-10-21：不可用时胶囊底色变暗红并浮动，悬停图标显示不可用提示；
+ *     正常时胶囊底色为深绿并浮动；主色调仍是黑色（只做淡叠加）。
+ *   - 2026-10-24 用户改口：**去掉正常态的绿色底色**（连同它的呼吸动画），
+ *     healthy 回到纯黑胶囊；暗红告警保留。
  *
  * 这类视觉状态容易出现「CSS 写了但 JS 没挂类」或「类挂了但 CSS 选择器对不上」，
- * 两边都不报错，只能静态对齐断言。
+ * 两边都不报错，只能静态对齐断言。「已删除」类断言一律在剥离注释后的文本上判。
  */
 
 const test = require('node:test');
@@ -86,23 +87,29 @@ test('聚合只看有样本的 mark（否则一项无样本就永远不变色）
   );
 });
 
-test('CSS 定义了 healthy / unavailable 两套底色', () => {
-  assert.match(stylesSrc, /body\[data-avail='healthy'\]\s*\.bar/, '缺 healthy 底色规则');
-  assert.match(stylesSrc, /body\[data-avail='unavailable'\]\s*\.bar/, '缺 unavailable 底色规则');
+test('不可用态有底色规则；正常态不再染色（2026-10-24 去掉绿底）', () => {
+  const css = stripComments(stylesSrc);
+  assert.match(css, /body\[data-avail='unavailable'\]\s*\.bar/, '缺 unavailable 底色规则');
+  assert.doesNotMatch(
+    css,
+    /body\[data-avail='healthy'\]\s*\.bar/,
+    'healthy 不得再有底色规则（绿底已按用户要求删除）'
+  );
 });
 
-test('两种状态都有呼吸动画（浮动感）', () => {
-  assert.match(stylesSrc, /@keyframes bar-breathe-ok/, '缺正常态动画');
-  assert.match(stylesSrc, /@keyframes bar-breathe-bad/, '缺不可用态动画');
+test('只有不可用态保留呼吸动画', () => {
+  const css = stripComments(stylesSrc);
+  assert.match(css, /@keyframes bar-breathe-bad/, '缺不可用态动画');
+  assert.doesNotMatch(css, /bar-breathe-ok/, '正常态动画应随绿底一起删除');
 });
 
-test('主色调仍是黑色：底色透明度够高，不是纯红/纯绿', () => {
-  // 深绿 rgba(10, 32, 22, .86) / 暗红 rgba(38, 12, 12, .88) —— 三个通道都必须很低
-  const ok = stylesSrc.match(/body\[data-avail='healthy'\]\s*\.bar\s*\{[^}]*background-color:\s*rgba\((\d+),\s*(\d+),\s*(\d+)/);
-  assert.ok(ok, '正常态必须用 rgba 深绿');
-  for (const ch of ok.slice(1, 4)) assert.ok(Number(ch) <= 40, `绿通道 ${ch} 过高，会失去黑色主调`);
+test('主色调仍是黑色：不可用底色透明度够高，且绿色残留清干净', () => {
+  const css = stripComments(stylesSrc);
+  // 旧绿底 rgba(10,32,22,.86) 与绿发光 rgba(61,220,132,*) 都必须不存在
+  assert.doesNotMatch(css, /rgba\(\s*10,\s*32,\s*22/, '正常态绿底 rgba 残留');
+  assert.doesNotMatch(css, /rgba\(\s*61,\s*220,\s*132/, '绿色发光 rgba(61,220,132) 残留');
 
-  const bad = stylesSrc.match(/body\[data-avail='unavailable'\]\s*\.bar\s*\{[^}]*background-color:\s*rgba\((\d+),\s*(\d+),\s*(\d+)/);
+  const bad = css.match(/body\[data-avail='unavailable'\]\s*\.bar\s*\{[^}]*background-color:\s*rgba\((\d+),\s*(\d+),\s*(\d+)/);
   assert.ok(bad, '不可用态必须用 rgba 暗红');
   for (const ch of bad.slice(1, 4)) assert.ok(Number(ch) <= 60, `红通道 ${ch} 过高，会失去黑色主调`);
 });

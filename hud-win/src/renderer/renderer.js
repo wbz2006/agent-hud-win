@@ -660,14 +660,13 @@ function markHtml(r, opts) {
   /*
    * 可用性状态 → 胶囊底色。
    *
-   * 用户要求：
-   *   不可用（近 24h 有失败请求）→ 胶囊底色变**暗红**（浮动/呼吸感）
-   *   正常（近 24h 全成功）     → 胶囊底色为**深绿**（浮动/呼吸感）
-   *   无足够数据                 → 保持原样（黑胶囊 + 细边框）
+   * 不可用（近 24h 有失败请求）→ 胶囊底色变**暗红**（浮动/呼吸感）
+   * 正常（近 24h 全成功）     → 保持黑胶囊（2026-10-24 用户要求去掉绿底）
+   * 无足够数据                 → 保持原样（黑胶囊 + 细边框）
    *
-   * 主色调仍是黑色：底色只是很淡的叠加，不是把整条染成红/绿。
    * 状态同时以 data-state 挂在 .mark 上，供悬停提示与 CSS 使用；
-   * 整个胶囊的底色由 renderMarks 汇总后写到 body 的 data-avail 上。
+   * 整个胶囊的底色由 renderMarks 汇总后写到 body 的 data-avail 上
+   * （只有 unavailable 有对应的 CSS 规则，healthy 目前不染色）。
    */
   const barState = r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown';
 
@@ -876,14 +875,14 @@ function renderMarks(summary) {
    *
    * 聚合规则（只看**有样本**的 mark）：
    *   任一有样本的 mark 不可用 → unavailable（暗红）
-   *   有样本的 mark 全部可用   → healthy（深绿）
+   *   有样本的 mark 全部可用   → healthy（**不再染色**，2026-10-24 去掉绿底；
+   *                              这个值仍会写进 body.dataset.avail 与 mark 类名）
    *   没有任何样本             → unknown（保持原黑）
    *
    * 为什么要排除 unknown：Claude / DSH 的请求不进 CC Switch 账本
    * （Claude 走官方账号、DSH 走 WorkBuddy 直连），它们永远没有可用性样本。
-   * 如果要求"所有 mark 都 healthy"才变绿，那一项无样本就永远把整条拖回黑色，
-   * 用户根本看不到任何颜色 —— 实测踩到过（body 的 data-avail 恒为 unknown）。
-   * 所以只对"能判断的"下结论，无法判断的不参与投票。
+   * 如果要求"所有 mark 都 healthy"才判断，那一项无样本就永远把整条拖回 unknown，
+   * 实测踩到过（body 的 data-avail 恒为 unknown）。所以只对"能判断的"下结论。
    */
   const states = items.map((r) => (r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown'));
   const known = states.filter((s) => s !== 'unknown');
