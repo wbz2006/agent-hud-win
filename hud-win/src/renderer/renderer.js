@@ -907,16 +907,40 @@ function renderMarks(summary) {
  */
 function measureBar() {
   if (verticalLayout || !window.hud || !window.hud.measure) return;
+  /*
+   * 拖动中不测量：拖动时窗口尺寸被冻结，主进程也不会按测量值重排；
+   * 而横↔竖翻转的瞬间窗口先变窄、body.vertical 还没到（它走 IPC），
+   * 这时按横排量出来的宽度只有几十像素，会把 contentWidth 污染成下限
+   * （实测翻转一次，松手后胶囊变成 100px 的窄条）。
+   */
+  if (drag) return;
   requestAnimationFrame(() => {
-    const bar = $('bar');
-    if (!bar) return;
-    const cs = getComputedStyle(bar);
+    if (drag) return;
+    const need = measureBarNeed();
+    if (need) window.hud.measure(need);
+  });
+}
+
+/**
+ * 同步量出胶囊需要的内容宽度（不排队到下一帧）。
+ * 测量期间临时关掉子元素的过渡（body.measuring）：悬停加宽/收窄是 width 过渡，
+ * 过渡途中 getBoundingClientRect() 只会给出中间的宽度，量出来会偏大或偏小
+ * （实测启动瞬间拿到过 420px 而不是 134px 的宽度）。关掉过渡后布局直接跳到终值，
+ * 量到的就是稳态尺寸；同一任务内立刻移除 class，不会产生可见的重绘。
+ */
+function measureBarNeed() {
+  const el = $('bar');
+  if (!el) return 0;
+  const wasMeasured = document.body.classList.contains('measuring');
+  if (!wasMeasured) document.body.classList.add('measuring');
+  try {
+    const cs = getComputedStyle(el);
     const gap = parseFloat(cs.columnGap) || 0;
     const padL = parseFloat(cs.paddingLeft) || 0;
     const padR = parseFloat(cs.paddingRight) || 0;
     let sum = 0;
     let count = 0;
-    for (const child of bar.children) {
+    for (const child of el.children) {
       if (child.classList.contains('panel')) continue; // 面板在栏下方，不占宽
       const r = child.getBoundingClientRect();
       if (r.width > 0) {
@@ -925,9 +949,10 @@ function measureBar() {
       }
     }
     // +8 余量：边框 1px×2 + 圆角抗锯齿 + 亚像素取整（+2 时实测仍差 2px 裁按钮）
-    const need = Math.ceil(padL + padR + sum + gap * Math.max(0, count - 1)) + 8;
-    window.hud.measure(need);
-  });
+    return Math.ceil(padL + padR + sum + gap * Math.max(0, count - 1)) + 8;
+  } finally {
+    if (!wasMeasured) document.body.classList.remove('measuring');
+  }
 }
 
 /**
@@ -1214,6 +1239,15 @@ const SIDE_PAD = 60;
 function applyLayout(layout) {
   verticalLayout = !!(layout && layout.vertical);
   document.body.classList.toggle('vertical', verticalLayout);
+  /*
+   * 面板展开方向（由停靠边决定，主进程算好推过来）：
+   *   down  → 顶部横条，面板在下方
+   *   right → 左侧竖条，面板在竖条右侧（朝屏幕内）
+   *   left  → 右侧竖条，面板在竖条左侧
+   * 拖动中途翻转朝向时也走这条路径，所以拖到左右边时期望形状与实际落定一致。
+   */
+  const anchor = (layout && layout.anchor) || 'down';
+  document.body.classList.toggle('panel-left', anchor === 'left');
 }
 
 if (window.hud && window.hud.onLayout) {
@@ -1240,6 +1274,13 @@ const FADE_MS = 180;
 let panelOpen = false;
 
 /**
+ * 正在进行的拖动（null = 没在按）。
+ * 声明放在这里而不是拖动代码旁边：setHovering / applyLayout 更早被调用，
+ * `let` 的暂时性死区会让它们撞 ReferenceError。
+ */
+let drag = null;
+
+/**
  * 悬停：只让胶囊"活起来"——露出统计与按钮（并让环靠左让位）。
  * 不再自动展开面板，避免鼠标扫过就弹出一大块内容（用户明确要求）。
  */
@@ -1253,6 +1294,8 @@ const VERTICAL_HOVER_H = 245;
 const SIDE_THICKNESS = 52;
 
 function setHovering(next) {
+  // 拖动中不响应 hover：主进程此时也不发 hud:hover，这里是 DOM mouseenter 的兜底
+  if (drag && drag.armed) return;
   /*
    * 展开态（panelOpen）期间**完全不响应 hover** ——
    * 卡片是用 ☰ 点开的，展开后就应该整体维持展开：按钮保持可见（否则
@@ -1366,6 +1409,143 @@ if (expandBtn) {
     expandBtn.title = panelOpen ? '收起详情面板' : '展开详情面板';
   });
 }
+
+/* ============================================================
+ * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手落盘）
+ *
+ * 手感对齐原 macOS 项目的 HUDDragWindowController（Notch/Island/）：
+ *   · 左键按住胶囊，位移 ≥ 6px **或**按住 ≥ 300ms 才算"拿起"——
+ *     拿起之前只是普通按下，松开什么也不发生（点按钮照旧）
+ *   · 拿起瞬间 body 加 .dragging：胶囊出现虚线边框，光标变抓手
+ *   · 移动按增量驱动主进程 win.setPosition；松手才写盘
+ *     （hud:drag-end → config: dock='free' + freePos），不逐帧写盘
+ * ============================================================ */
+const DRAG_TRAVEL = 6;    // 与原项目 HUDDragView.travel 一致
+const DRAG_HOLD_MS = 300; // 与原项目 holdDelay 一致
+
+/** 拖动开始前先收起面板与悬停态：拿起的是胶囊，不是整张卡片。 */
+function collapseForDrag() {
+  if (expandTimer) clearTimeout(expandTimer);
+  if (expandTimer2) clearTimeout(expandTimer2);
+  panel.classList.remove('open');
+  document.body.classList.remove('panel-open');
+  document.body.classList.remove('hovering');
+  panelOpen = false;
+  if (expandBtn) {
+    expandBtn.textContent = '☰';
+    expandBtn.title = '展开详情面板';
+  }
+  /*
+   * 立即重测内容宽度：悬停加宽过的胶囊（露出统计与按钮）直接被拿起来会一直
+   * 保持加宽状态直到松手。先量回收起态宽度，主进程在松手重排时就能把胶囊
+   * 缩回贴合内容的宽度（拖动期间窗口尺寸被冻结，不会中途跳）。
+   */
+  measureBar();
+}
+
+/** 拿起：虚线边框出现，冻结悬停/测量重排，主进程落回收起态胶囊。 */
+function armDrag() {
+  if (!drag || drag.armed) return;
+  drag.armed = true;
+  if (drag.timer) {
+    clearTimeout(drag.timer);
+    drag.timer = null;
+  }
+  collapseForDrag();
+  document.body.classList.add('dragging');
+  if (window.hud && window.hud.dragStart) {
+    window.hud.dragStart().catch(() => {});
+  }
+}
+
+/** 每帧合并一次增量再发主进程：mousemove 频率高于刷新率，逐事件发会抖。 */
+function dragMoveFrame() {
+  if (!drag) return;
+  const dx = drag.dx;
+  const dy = drag.dy;
+  drag.dx = 0;
+  drag.dy = 0;
+  drag.raf = 0;
+  if (!drag.armed || (!dx && !dy)) return;
+  if (window.hud && window.hud.dragMove) window.hud.dragMove(dx, dy);
+}
+
+function onBarPointerDown(e) {
+  // 只认左键；按钮（☰ ⟳ ⚙ ⊖ ✕）归按钮，不参与拖动
+  if (e.button !== 0) return;
+  if (!window.hud || !window.hud.dragStart) return;
+  if (e.target && e.target.closest && e.target.closest('.icon-btn')) return;
+  drag = {
+    id: e.pointerId,
+    sx: e.screenX,
+    sy: e.screenY,
+    lx: e.screenX,
+    ly: e.screenY,
+    dx: 0,
+    dy: 0,
+    armed: false,
+    raf: 0,
+    timer: null,
+  };
+  drag.timer = setTimeout(armDrag, DRAG_HOLD_MS);
+  // 指针捕获：拖出胶囊（甚至拖出窗口）也持续收到 move/up
+  try {
+    bar.setPointerCapture(e.pointerId);
+  } catch (_) {
+    /* 捕获失败时事件照常，只是拖出胶囊边框会断流 */
+  }
+}
+
+function onBarPointerMove(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const dx = e.screenX - drag.lx;
+  const dy = e.screenY - drag.ly;
+  if (!drag.armed) {
+    // 位移不足阈值还是普通按下，不给主进程发任何东西
+    if (Math.hypot(e.screenX - drag.sx, e.screenY - drag.sy) < DRAG_TRAVEL) return;
+    armDrag();
+  }
+  drag.lx = e.screenX;
+  drag.ly = e.screenY;
+  drag.dx += dx;
+  drag.dy += dy;
+  /*
+   * 拿起后位移真正超过阈值才算"拖过"：原项目 mouseUp 只在 isDragging 时提交
+   * （按住 300ms 拿起但没动就松手 = 仍然是一次点击，不写落点）。
+   * 没有这个判断，一次 300ms 以上的慢速单击也会把 dock 改成 free。
+   */
+  if (Math.hypot(e.screenX - drag.sx, e.screenY - drag.sy) >= DRAG_TRAVEL) {
+    drag.moved = true;
+  }
+  if (!drag.raf) drag.raf = requestAnimationFrame(dragMoveFrame);
+}
+
+function endDrag(e) {
+  if (!drag) {
+    // 兜底：拖动对象已销毁时残留的 dragging 类会隐藏面板、锁住 grab 光标
+    document.body.classList.remove('dragging');
+    return;
+  }
+  if (e && e.pointerId !== drag.id) return;
+  const armed = drag.armed;
+  const moved = !!drag.moved;
+  if (drag.timer) clearTimeout(drag.timer);
+  if (drag.raf) cancelAnimationFrame(drag.raf);
+  drag = null;
+  document.body.classList.remove('dragging');
+  // 没拿起、或拿起后没拖动（慢速单击）都不提交落点
+  if (armed && moved && window.hud && window.hud.dragEnd) {
+    window.hud.dragEnd().catch(() => {});
+  }
+  // 松手后重新量一次宽度：拖动期间禁了测量，朝向也可能已经翻转
+  measureBar();
+}
+
+bar.addEventListener('pointerdown', onBarPointerDown);
+bar.addEventListener('pointermove', onBarPointerMove);
+bar.addEventListener('pointerup', endDrag);
+bar.addEventListener('pointercancel', endDrag);
+window.addEventListener('blur', () => endDrag());
 
 /**
  * 主进程轮询光标得出的 hover 通知（唯一可信的"是否还在窗口内"依据）。

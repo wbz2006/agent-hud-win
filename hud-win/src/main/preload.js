@@ -5,7 +5,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('hud', {
   onData: (cb) => ipcRenderer.on('hud:data', (_e, payload) => cb(payload)),
   onError: (cb) => ipcRenderer.on('hud:error', (_e, msg) => cb(msg)),
-  /** 停靠位置变化（横排/竖排）。 */
+  /**
+   * 停靠位置变化：竖排/横排 + 面板展开方向。
+   * anchor = down / up（横排，面板在胶囊下/上方）· right / left（竖排）。
+   */
   onLayout: (cb) => ipcRenderer.on('hud:layout', (_e, layout) => cb(layout)),
   /**
    * 光标进出栏的通知（主进程轮询 screen.getCursorScreenPoint 得出）。
@@ -39,4 +42,12 @@ contextBridge.exposeInMainWorld('hud', {
   isVisible: () => ipcRenderer.invoke('hud:is-visible'),
   /** 查询热键注册状态（设置页展示）。 */
   getHotkey: () => ipcRenderer.invoke('hud:get-hotkey'),
+  /**
+   * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手落盘）。
+   * dragStart 让主进程落回收起态并冻结自动重排；dragMove 走增量（每帧一次）；
+   * dragEnd 才把 dock='free' + freePos 写进 config.json。
+   */
+  dragStart: () => ipcRenderer.invoke('hud:drag-start'),
+  dragMove: (dx, dy) => ipcRenderer.send('hud:drag-move', dx, dy),
+  dragEnd: () => ipcRenderer.invoke('hud:drag-end'),
 });

@@ -36,6 +36,8 @@ function resolveSourcesDir() {
 const SOURCES_DIR = resolveSourcesDir();
 const { Worker } = require('worker_threads');
 const config = require('./config');
+/** 自由停靠（拖动）的纯几何计算：不依赖 electron，可单测。 */
+const dragGeo = require('./drag');
 
 const IS_DEV = process.argv.includes('--dev');
 
@@ -92,6 +94,13 @@ let hoverTimer = null;
  * marks 数量随模型数变化，固定宽度会导致内容被拉伸或截断。
  */
 let contentWidth = BAR.width;
+/**
+ * 是否正在被用户按住拖动（自由定位）。
+ *
+ * 拖动期间主线程只允许 hud:drag-move 改窗口位置：hover 轮询、内容宽度测量、
+ * 展开请求全都要让路，否则窗口会被这些"自动重排"拽回锚点，手感是跟手一顿一顿的。
+ */
+let dragging = false;
 
 /**
  * 侧边停靠时的竖条尺寸：窄边是条厚，长边沿屏幕纵向铺开。
@@ -116,29 +125,17 @@ const SIDE_PANEL_MIN_WIDTH = 52 + 8 + 420 + 8;
  * 停靠位置 → 窗口矩形。
  *
  * 竖排（left / right）时窗口是"窄而高"的竖条，贴在屏幕左右边缘、垂直居中；
- * 横排（top / top-left / top-right）保持横条，宽度取当前内容宽度（marks 数量
- * 不固定，由渲染层回报），这样悬浮条宽度始终贴合内容、不会出现横向拉伸。
+ * 横排（top）保持横条、顶部居中，宽度取当前内容宽度（marks 数量不固定，
+ * 由渲染层回报），这样悬浮条宽度始终贴合内容、不会出现横向拉伸。
+ * 几何统一走 dragGeo.dockedRect（拖动吸附与停靠共用同一套矩形算法）。
  */
 function dockRect(dock, bounds, currentWidth) {
-  const margin = 6;
-  const vertical = dock === 'left' || dock === 'right';
-
-  if (vertical) {
-    const w = SIDE_THICKNESS;
-    const h = SIDE_RUN;
-    const y = Math.round(bounds.y + (bounds.height - h) / 2);
-    // right：贴右边缘；left：贴左边缘
-    const x = dock === 'right' ? bounds.x + bounds.width - w - margin : bounds.x + margin;
-    return { x, y, width: w, height: h };
-  }
-
-  const w = clampWidth(currentWidth);
-  const h = BAR.height;
-  const y = bounds.y + margin;
-  let x = Math.round(bounds.x + (bounds.width - w) / 2);
-  if (dock === 'top-left') x = bounds.x + margin;
-  if (dock === 'top-right') x = bounds.x + bounds.width - w - margin;
-  return { x, y, width: w, height: h };
+  return dragGeo.dockedRect(dock, bounds, {
+    barW: clampWidth(currentWidth),
+    barH: BAR.height,
+    sideW: SIDE_THICKNESS,
+    runH: SIDE_RUN,
+  });
 }
 
 /** 把渲染层回报的宽度夹在合理区间内。 */
@@ -152,14 +149,69 @@ function isVerticalDock(dock) {
   return dock === 'left' || dock === 'right';
 }
 
+/**
+ * 几何常量包（给 drag.js 的纯函数用）。
+ * barW 必须取**当前内容宽度**：marks 数量会变，收起态宽度不是固定值。
+ */
+function barDims() {
+  return {
+    barW: clampWidth(contentWidth),
+    barH: BAR.height,
+    sideW: SIDE_THICKNESS,
+    runH: SIDE_RUN,
+  };
+}
+
+/** 悬浮条所在显示器的可用区域（多屏时跟随窗口，而不是永远锁主屏）。 */
+function currentWorkArea() {
+  if (win && !win.isDestroyed()) {
+    try {
+      return screen.getDisplayMatching(win.getBounds()).workArea;
+    } catch (_) {
+      /* 窗口刚创建时偶发拿不到显示器，退回主屏 */
+    }
+  }
+  return screen.getPrimaryDisplay().workArea;
+}
+
+/**
+ * 当前布局：停靠边 + 朝向 + 面板展开方向。
+ *
+ * 胶囊只停靠在三条边上：顶部横条、左侧/右侧竖条。位置由 dockRect() 按屏幕
+ * 边缘算出来（拖动松手只是改变 dock，不保留任意坐标）。
+ * anchor 决定主进程怎么改窗口矩形，也要推给渲染层让 CSS 换面板方向。
+ */
+function layoutOf(cfg) {
+  const conf = cfg || config.load();
+  const dock = config.normalizeDock(conf.dock);
+  return {
+    dock,
+    vertical: isVerticalDock(dock),
+    wa: currentWorkArea(),
+    dims: barDims(),
+    anchor: dragGeo.anchorOf(dock),
+  };
+}
+
+/** 把朝向 + 展开方向推给渲染层（CSS 据此把面板换到另一侧）。 */
+function sendLayout(layout) {
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return;
+  win.webContents.send('hud:layout', {
+    vertical: layout.vertical,
+    dock: layout.dock,
+    anchor: layout.anchor,
+  });
+}
+
 /** 按当前配置把悬浮条摆到指定位置（竖排/横排形状不同）。 */
 function applyDock() {
   if (!win || win.isDestroyed()) return;
-  const dock = config.load().dock || 'top';
-  // 横排时用当前窗口宽度作为内容宽度（由渲染层通过 hud:measure 回报更新）
-  const r = dockRect(dock, screen.getPrimaryDisplay().workArea, contentWidth);
-  const wasExpanded = expanded;
-  if (wasExpanded) {
+  // 拖动期间位置只由 hud:drag-move 决定 —— 任何重排都会把胶囊拽回原位
+  if (dragging) return;
+
+  const layout = layoutOf();
+  const r = dockRect(layout.dock, layout.wa, contentWidth);
+  if (expanded) {
     // 展开态下只更新位置，不压缩窗口尺寸——否则保存设置时会把已展开的
     // 卡片压回胶囊宽度，而渲染层的 panelOpen 状态未同步，导致 bar 变胶囊
     // 而图标仍停留在三环展开态（点 X 才恢复）。
@@ -168,10 +220,7 @@ function applyDock() {
   } else {
     win.setBounds(r);
   }
-  // 把布局朝向告诉渲染层，让 CSS 切换成竖排
-  if (win.webContents && !win.webContents.isDestroyed()) {
-    win.webContents.send('hud:layout', { vertical: isVerticalDock(dock), dock });
-  }
+  sendLayout(layout);
 }
 
 /**
@@ -193,8 +242,11 @@ function applyDock() {
  */
 function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
   if (!win || win.isDestroyed()) return;
-  const dock = config.load().dock || 'top';
-  const vertical = isVerticalDock(dock);
+  const layout = layoutOf();
+  // 拖动期间窗口尺寸必须钉死：展开/收起会让"拖着的胶囊"忽大忽小
+  if (dragging) return;
+  const dock = layout.dock;
+  const vertical = layout.vertical;
   if (expanded === next && !wantedSize) return;
   expanded = next;
 
@@ -266,17 +318,9 @@ function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
    *
    * 锁左边展开时条形停在原位、只往右长，视觉重心偏右而胶囊看上去偏左
    * （用户截图："整体不在屏幕中间"）。顶部居中停靠时，展开后应仍然居中。
-   * top-left / top-right 是贴边停靠，锁定对应的那条边不动。
    */
   const oldCenterX = b.x + b.width / 2;
-  let x;
-  if (dock === 'top-left') {
-    x = b.x; // 贴左，左边锚定
-  } else if (dock === 'top-right') {
-    x = b.x + b.width - w; // 贴右，右边锚定
-  } else {
-    x = Math.round(oldCenterX - w / 2); // 居中停靠：围绕中心对称展开
-  }
+  const x = Math.round(oldCenterX - w / 2);
   win.setBounds({ x, y: b.y, width: w, height: h });
 }
 
@@ -329,6 +373,12 @@ function startHoverWatch() {
   if (hoverTimer) clearInterval(hoverTimer);
   hoverTimer = setInterval(() => {
     if (!win || win.isDestroyed()) return;
+    /*
+     * 拖动期间不做 hover 判定：窗口跟着光标走，光标当然"永远在里面"，
+     * 一旦发 hud:hover 渲染层就会把胶囊从收起态撑到悬停态（露出统计与按钮），
+     * 拖动中的胶囊宽度一跳一跳。松手后由下一轮轮询自动恢复。
+     */
+    if (dragging) return;
     const over = cursorInside();
 
     if (over) {
@@ -737,8 +787,8 @@ ipcMain.handle('hud:get-hotkey', () => ({
 
 /** 渲染层启动时主动查询当前朝向（兜底，防 layout 消息早于监听器注册）。 */
 ipcMain.handle('hud:get-layout', () => {
-  const dock = config.load().dock || 'top';
-  return { vertical: isVerticalDock(dock), dock };
+  const layout = layoutOf();
+  return { vertical: layout.vertical, dock: layout.dock, anchor: layout.anchor };
 });
 
 /**
@@ -750,15 +800,17 @@ ipcMain.handle('hud:get-layout', () => {
  * 实测症状是悬停展开时宽 78、高 195 反复横跳，面板根本展不开。
  */
 ipcMain.handle('hud:measure', (_e, width) => {
-  const dock = config.load().dock || 'top';
-  if (isVerticalDock(dock)) return SIDE_THICKNESS;
+  const layout = layoutOf();
+  if (layout.vertical) return SIDE_THICKNESS;
+  // 拖动中不接测量值：翻转朝向的瞬间渲染层还按横排量，数值会偏小
+  if (dragging) return contentWidth;
 
   const next = clampWidth(width);
   if (Math.abs(next - contentWidth) > 1) {
     contentWidth = next;
     // 展开态下不重新定位：面板已经占好了位置，再调 applyDock 会把窗口按
-    // 收起尺寸重设一次，面板瞬间被裁掉。
-    if (!expanded) applyDock();
+    // 收起尺寸重设一次，面板瞬间被裁掉。拖动中更不能动（见 dragging 注释）。
+    if (!expanded && !dragging) applyDock();
   }
   return contentWidth;
 });
@@ -772,14 +824,15 @@ ipcMain.handle('hud:open-settings', () => {
 /**
  * 保存设置。主进程统一落盘，并立即应用影响窗口/采集的项：
  *   - alwaysOnTop       → 悬浮条与设置窗口的置顶状态
- *   - dock              → 悬浮条位置
+ *   - dock              → 悬浮条位置（top / left / right）
  *   - collectIntervalMs → 定时器间隔
  *   - enabledSources    → 下次采集生效
  *   - rateGraceMinutes / ringMode / rateOpenCode → 渲染层读取
  */
 ipcMain.handle('hud:save-settings', (_e, patch) => {
   const before = config.load();
-  const saved = config.save(patch || {});
+  const next = { ...(patch || {}) };
+  const saved = config.save(next);
 
   if (win && !win.isDestroyed()) win.setAlwaysOnTop(!!saved.alwaysOnTop);
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setAlwaysOnTop(!!saved.alwaysOnTop);
@@ -824,6 +877,7 @@ ipcMain.handle('hud:get-autostart', () => app.getLoginItemSettings().openAtLogin
  * wantedHeight 是面板需要的高度（横排=窗口高度；竖排=面板本身的高度）。
  */
 ipcMain.handle('hud:expand', (_e, next, wantedHeight, wantedPanelHeight, hoverGrow) => {
+  if (dragging) return expanded; // 拖动期间任何展开请求都不改窗口尺寸
   setExpanded(Boolean(next), wantedHeight, wantedPanelHeight, Boolean(hoverGrow));
   return expanded;
 });
@@ -840,6 +894,105 @@ ipcMain.handle('hud:quit', () => {
   reallyQuitting = true;
   app.quit();
   return true;
+});
+
+/*
+ * ---------- 拖动胶囊（吸附加载） ----------
+ *
+ * 对应原 macOS 项目的 HUDDragWindowController + ScreenHUD.beginMoving/move/finishMoving：
+ * 按住期间只移动窗口、**不写偏好**；松手才提交一次停靠。
+ *
+ * 本项目胶囊只停靠在三条边（上/左/右），所以拖动做两件事：
+ *   1. 跟手移动窗口，夹在光标所在显示器的工作区内；
+ *   2. 胶囊中心靠近左右边时**就地翻成竖条**（以中心为基准，不会横漂），
+ *      靠近顶部时翻回横条 —— 松手前就能看到最终形状。
+ *
+ *   hud:drag-start → 落回收起态胶囊矩形，立起 dragging 标志（hover/measure/expand 全部让路）
+ *   hud:drag-move  → 增量移动 + 预测吸附边 + 必要时翻转朝向
+ *   hud:drag-end   → 写盘 dock=<最近的边>，再按停靠矩形重排一次
+ *
+ * 用增量而不是绝对光标坐标：窗口本身在动，增量对 DPI 缩放与多屏都是稳的；
+ * 渲染层用 e.screenX/screenY（CSS 像素）与主进程的 DIP 坐标同一坐标系。
+ */
+let dragZone = null;
+/** 翻转朝向时窗口矩形的位置变化量；下一条拖动增量里要把它扣掉（见 drag-move）。 */
+let morphShift = null;
+
+ipcMain.handle('hud:drag-start', () => {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const layout = layoutOf();
+  dragging = true;
+  dragZone = layout.dock;
+  morphShift = null;
+  hovering = false;
+  if (collapseTimer) {
+    clearTimeout(collapseTimer);
+    collapseTimer = null;
+  }
+  // 展开态按住胶囊：先落回收起态，接下来拖的就是胶囊本身而不是整张卡片
+  const barRect = dragGeo.barRectFrom(win.getBounds(), layout.vertical, layout.anchor, layout.dims, layout.wa);
+  expanded = false;
+  win.setBounds(barRect);
+  sendLayout(layout);
+  return { ok: true, rect: barRect };
+});
+
+/** 拖动增量是高频消息（每帧一次），用 send/on 而不是 invoke，避免每帧一个 Promise。 */
+ipcMain.on('hud:drag-move', (_e, dx, dy) => {
+  if (!dragging || !win || win.isDestroyed()) return;
+
+  let mx = Number(dx) || 0;
+  let my = Number(dy) || 0;
+  if (morphShift) {
+    // 上一条消息里翻转朝向时已经重摆过矩形，这段位移不能再算一遍
+    mx -= morphShift.x;
+    my -= morphShift.y;
+    morphShift = null;
+  }
+
+  let b = win.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  const p = dragGeo.clampPos(b.x + mx, b.y + my, b.width, b.height, wa);
+  if (p.x !== b.x || p.y !== b.y) win.setPosition(p.x, p.y);
+
+  /*
+   * 吸附边变了就翻转朝向：横条 ↔ 竖条。
+   *
+   * 必须**以胶囊中心为基准**重设矩形：窗口宽度从 134 变 52 时若固定左上角，
+   * 胶囊会横漂一截；以中心重设后它就在光标底下原地变形。
+   *
+   * 矩形重摆会让窗口左上角跳一段（中心不变、尺寸变了）。渲染层只看得到
+   * 自己的 screenX/screenY，它并不知道这层修正，会把这段位移叠进下一条
+   * 增量里 —— 翻转一次就多移一次（竖条越拖越靠外，最后被夹在屏幕边上）。
+   * 所以这里把左上角的变化量记下来，下一条增量先扣掉它。
+   */
+  b = win.getBounds();
+  const zone = dragGeo.zoneOf(b, wa);
+  if (zone !== dragZone) {
+    dragZone = zone;
+    const vertical = zone !== 'top';
+    const pill = dragGeo.pillRect(b.x + b.width / 2, b.y + b.height / 2, vertical, barDims(), wa);
+    morphShift = { x: pill.x - b.x, y: pill.y - b.y };
+    win.setBounds(pill);
+    sendLayout({ vertical, dock: zone, anchor: dragGeo.anchorOf(zone) });
+  }
+});
+
+ipcMain.handle('hud:drag-end', () => {
+  if (!win || win.isDestroyed()) {
+    dragging = false;
+    dragZone = null;
+    morphShift = null;
+    return config.load();
+  }
+  dragging = false;
+  morphShift = null;
+  const b = win.getBounds();
+  const dock = dragZone || dragGeo.zoneOf(b, screen.getDisplayMatching(b).workArea);
+  dragZone = null;
+  const saved = config.save({ dock });
+  applyDock(); // 吸附到最近的边（居中停靠），顺带把朝向摆正
+  return saved;
 });
 
 /**

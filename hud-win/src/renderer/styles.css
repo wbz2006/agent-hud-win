@@ -72,6 +72,36 @@ html, body {
   -webkit-app-region: no-drag;
 }
 
+/* ---------- 拖动胶囊（自由定位） ---------- */
+/*
+ * 手感对齐原项目 HUDDragWindowController：按住左键胶囊被"拿起"，
+ * 虚线边框出现（原项目 CAShapeLayer：lineDash [4,3]、白色 0.9、圆角跟胶囊），
+ * 松手落回并持久化。悬停时抓手提示可拖，拖动中抓取手。
+ *
+ * 悬停才显示 grab：平时不抢光标，和原项目"静止时不接管指针"的决定一致。
+ */
+body.hovering .bar { cursor: grab; }
+body.dragging .bar { cursor: grabbing; }
+
+body.dragging .bar::before {
+  content: '';
+  position: absolute;
+  /* 外扩 6px：虚线框套在胶囊外面，不与胶囊自身 1px 描边打架 */
+  inset: -6px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.025); /* 原项目 outline.fillColor */
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.8); /* 原项目 outline shadow */
+  pointer-events: none;
+}
+
+/* 拖的是胶囊本身，面板收起（主进程同时也会把窗口落回胶囊矩形） */
+body.dragging .panel { display: none; }
+
+/* 测量专用：量胶囊宽度时临时关掉子元素过渡，避免量到 width 过渡的中间值。
+ * 只在同一个同步任务里加上再摘掉，不会有可见的重绘。 */
+body.measuring .bar > * { transition: none !important; }
+
 /* ---------- 底板（原项目 SimpleMeterView.body） ---------- */
 /* 圆角 = 高度的一半（胶囊形），原项目的 continuous 圆角在竖条上就是这个效果。
  *
@@ -701,6 +731,17 @@ body.vertical .panel.open {
   pointer-events: auto;
 }
 body.vertical .glow { display: none; }
+
+/* ---------- 竖排自由停靠：面板朝左展开（竖条贴屏幕右缘时） ----------
+ * 基础竖排规则把面板定在竖条右侧（left:60），anchor='left' 时镜像到左侧。
+ * 竖条本体在窗口最左，胶囊矩形与收起态窗口完全重合，不用动 .bar。
+ */
+body.vertical.panel-left .panel {
+  left: 8px;
+  right: 60px;
+  transform: translateX(6px);
+}
+body.vertical.panel-left .panel.open { transform: translateX(0); }
 
 /* ============================================================
  * 自定义滚动条

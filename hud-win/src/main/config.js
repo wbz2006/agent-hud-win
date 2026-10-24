@@ -61,7 +61,14 @@ const DEFAULTS = {
   startHidden: false,
   /** 采集间隔（毫秒）。 */
   collectIntervalMs: 30000,
-  /** 停靠位置：top / top-left / top-right 为横条；left / right 为贴边竖条。 */
+  /**
+   * 停靠位置：
+   *   top   → 屏幕顶部居中横条
+   *   left  → 贴左边缘竖条
+   *   right → 贴右边缘竖条
+   * 拖动松手时吸附到离落点最近的一条边（上/左/右），左右两边是竖排。
+   * 旧版本的 top-left / top-right / free 不再支持，读到就归一化成 top。
+   */
   dock: 'top',
   /**
    * 圆环进度弧的分母：今日预算（人民币）。
@@ -131,6 +138,17 @@ const DEFAULTS = {
 
 let cache = null;
 
+/** 合法停靠边。顶/左/右三条边，左右是竖排。 */
+const DOCKS = ['top', 'left', 'right'];
+
+/**
+ * 归一化停靠值：旧配置里的 top-left / top-right / free 一律回到 top。
+ * 不收口的话，设置页 select 没有对应 option 会显示空白，窗口也会摆错位置。
+ */
+function normalizeDock(v) {
+  return DOCKS.includes(v) ? v : 'top';
+}
+
 /** 读取配置（带默认值合并）。文件不存在或损坏时回退默认值。 */
 function load() {
   if (cache) return cache;
@@ -143,6 +161,7 @@ function load() {
     cache = {
       ...DEFAULTS,
       ...raw,
+      dock: normalizeDock(raw.dock),
       enabledSources: { ...DEFAULTS.enabledSources, ...(raw.enabledSources || {}) },
       relay: { ...DEFAULTS.relay, ...(raw.relay || {}) },
     };
@@ -167,6 +186,7 @@ function save(patch) {
   for (const k of Object.keys(merged)) {
     if (!(k in DEFAULTS)) delete merged[k];
   }
+  if ('dock' in merged) merged.dock = normalizeDock(merged.dock);
   merged.enabledSources = { ...DEFAULTS.enabledSources, ...(merged.enabledSources || {}) };
   merged.relay = { ...DEFAULTS.relay, ...(merged.relay || {}) };
 
@@ -191,4 +211,4 @@ function current() {
   return load();
 }
 
-module.exports = { load, save, current, DEFAULTS, CONFIG_FILE };
+module.exports = { load, save, current, DEFAULTS, CONFIG_FILE, DOCKS, normalizeDock };
