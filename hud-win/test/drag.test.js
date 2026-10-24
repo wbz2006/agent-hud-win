@@ -174,6 +174,26 @@ test('主进程注册了拖动三段 IPC，松手时写 dock（吸附边）', ()
   assert.doesNotMatch(MAIN_CODE, /dock:\s*'free'/);
 });
 
+test('拖动期间窗口尺寸钉死，不用 setPosition 累积漂移', () => {
+  /*
+   * Windows 150% 缩放下 win.setPosition 每次都会把 DIP 尺寸按物理像素
+   * 来回取整、宽度 +1px：实测按住左右滑 120 次，innerWidth 从 134 涨到 254
+   * （用户反馈「按住后随着左右滑动 bar 越来越宽」）。
+   * 修法：拖动中记一份 dragSize，每次 move 显式带上宽高，漂了立刻纠回。
+   */
+  assert.match(MAIN_CODE, /let dragSize = null;/);
+  assert.match(MAIN_CODE, /dragSize = \{ width: barRect\.width, height: barRect\.height \};/);
+  assert.match(MAIN_CODE, /if \(dragSize && \(b\.width !== dragSize\.width \|\| b\.height !== dragSize\.height\)\)/);
+  assert.match(MAIN_CODE, /width: dragSize \? dragSize\.width : b\.width/);
+  // 翻转朝向时换的就是"钉住的尺寸"
+  assert.match(MAIN_CODE, /dragSize = \{ width: pill\.width, height: pill\.height \};/);
+  // 松手后清掉，避免影响下一次拖动与悬停
+  const end = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-end'"));
+  assert.match(end.slice(0, 900), /dragSize = null;/);
+  // setPosition 是高 DPI 漂移的来源，拖动路径里一律不用
+  assert.doesNotMatch(MAIN_CODE, /win\.setPosition\(/);
+});
+
 test('拿起过就必须结束拖动，只有真拖过才写盘', () => {
   // 慢速单击（按住 300ms 拿起但没动）也走 dragEnd(commit=false)：
   // 否则主进程 dragging 常驻 true，悬停轮询与 hud:measure 永久被挡

@@ -931,6 +931,16 @@ ipcMain.handle('hud:quit', () => {
 let dragZone = null;
 /** 翻转朝向时窗口矩形的位置变化量；下一条拖动增量里要把它扣掉（见 drag-move）。 */
 let morphShift = null;
+/**
+ * 拖动中胶囊的固定尺寸。
+ *
+ * 拖动期间窗口尺寸必须由这里**钉死**，不能靠 setPosition 让 Electron 用
+ * "当前尺寸再挪个位置"：Windows 150% 缩放下 setPosition 会把 DIP 尺寸按
+ * 物理像素来回取整，每调一次宽度 +1px —— 实测按住左右滑 120 次，
+ * 胶囊从 134 一路涨到 254（用户反馈「按住后随着左右滑动 bar 越来越宽」）。
+ * 所以每次 move 都显式带上这个尺寸，尺寸漂了也顺手纠回去。
+ */
+let dragSize = null;
 
 ipcMain.handle('hud:drag-start', () => {
   if (!win || win.isDestroyed()) return { ok: false };
@@ -953,6 +963,7 @@ ipcMain.handle('hud:drag-start', () => {
   // 展开态按住胶囊：先落回收起态，接下来拖的就是胶囊本身而不是整张卡片
   const barRect = dragGeo.barRectFrom(win.getBounds(), layout.vertical, layout.anchor, layout.dims, layout.wa);
   expanded = false;
+  dragSize = { width: barRect.width, height: barRect.height };
   win.setBounds(barRect);
   sendLayout(layout);
   return { ok: true, rect: barRect };
@@ -972,9 +983,20 @@ ipcMain.on('hud:drag-move', (_e, dx, dy) => {
   }
 
   let b = win.getBounds();
+  /*
+   * 尺寸自纠：setPosition 在 Windows 高 DPI 下会累积 +1px 宽度误差
+   * （DIP↔物理像素取整来回跳），连续 move 一段时间胶囊肉眼可见地变宽。
+   * 每次把窗口拉回 dragSize 记录的标准尺寸，漂移立刻归零。
+   */
+  if (dragSize && (b.width !== dragSize.width || b.height !== dragSize.height)) {
+    win.setBounds({ x: b.x, y: b.y, width: dragSize.width, height: dragSize.height });
+    b = win.getBounds();
+  }
   const wa = screen.getDisplayMatching(b).workArea;
   const p = dragGeo.clampPos(b.x + mx, b.y + my, b.width, b.height, wa);
-  if (p.x !== b.x || p.y !== b.y) win.setPosition(p.x, p.y);
+  if (p.x !== b.x || p.y !== b.y) {
+    win.setBounds({ x: p.x, y: p.y, width: dragSize ? dragSize.width : b.width, height: dragSize ? dragSize.height : b.height });
+  }
 
   /*
    * 吸附边变了就翻转朝向：横条 ↔ 竖条。
@@ -994,6 +1016,7 @@ ipcMain.on('hud:drag-move', (_e, dx, dy) => {
     const vertical = zone !== 'top';
     const pill = dragGeo.pillRect(b.x + b.width / 2, b.y + b.height / 2, vertical, barDims(), wa);
     morphShift = { x: pill.x - b.x, y: pill.y - b.y };
+    dragSize = { width: pill.width, height: pill.height };
     win.setBounds(pill);
     sendLayout({ vertical, dock: zone, anchor: dragGeo.anchorOf(zone) });
   }
@@ -1011,10 +1034,12 @@ ipcMain.handle('hud:drag-end', (_e, commit) => {
     dragging = false;
     dragZone = null;
     morphShift = null;
+    dragSize = null;
     return config.load();
   }
   dragging = false;
   morphShift = null;
+  dragSize = null;
   const b = win.getBounds();
   const dock = dragZone || dragGeo.zoneOf(b, screen.getDisplayMatching(b).workArea);
   dragZone = null;
