@@ -639,7 +639,7 @@ function markHtml(r, opts) {
           : r.spendTip
             ? ` · ${r.spendTip}`
             : ''
-      }</span>`;
+      }${r.spendTip && todayCny != null ? ` · ${r.spendTip}` : ''}</span>`;
 
   /*
    * 金额标签：跟在环的右侧（原版是百分比数字的位置）。
@@ -684,7 +684,7 @@ function markHtml(r, opts) {
       : r.spendTip
         ? `；${r.spendTip}`
         : ''
-  }">
+  }${r.spendTip && todayCny != null ? `；${r.spendTip}` : ''}">
     <div class="mark-icon">
       <!-- 不能写死 width/height="22"：容器是 --mark(30px)，SVG 只占 22 就会贴在
            左上角，而 logo 按 30 居中，两者差 4px —— 视觉上就是"图标不在环心"。
@@ -702,7 +702,7 @@ function markHtml(r, opts) {
       compact
         ? `<span class="mark-cost" title="${
             todayCny != null
-              ? `今日使用金额 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}`
+              ? `今日使用金额 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}${r.spendTip ? `；${r.spendTip}` : ''}`
               : r.spendTip
                 ? r.spendTip
                 : '今日使用金额（无数据）'
@@ -777,15 +777,20 @@ function sourceMeterItems(summary) {
     const appCost = byApp[key];
     const todayUsd = appCost && typeof appCost.usd === 'number' ? appCost.usd : null;
     // 人民币值（界面显示用）；ccswitch 已算好，取不到时按 1:5 兜底
-    const todayCny =
+    let todayCny =
       appCost && typeof appCost.cny === 'number' ? appCost.cny : todayUsd != null ? todayUsd / 5 : null;
 
     /*
-     * DSH 的 DeepSeek **官方账户余额**。
+     * DSH 的金额显示（2026-10-25 用户决定）：**与 Claude / Codex 同一形态** ——
+     * 主显示改成「今日已使用金额」（环弧 = 今日已用/预算，金额标签 = ￥今日已用），
+     * 余额退到悬停提示里，不再占据标签位。
      *
-     * 注意口径：这是"还剩多少钱"，不是"今天花了多少"，也不是 WorkBuddy 积分。
-     * DSH 走官方账号，CC Switch 账本里没有它（账本只有 claude-desktop / codex），
-     * 所以第三个环显示余额；没配 Key 时显示 "—" 并在提示里说明原因，绝不显示 0。
+     * 今日值来自小鲸鱼账本的「余额观测法」（账本自己记一天内的余额差值），
+     * 单位已是账户本币，不用换算。三条兜底：
+     *   · 官方接口通道没有今日值（todayUsage=null）→ 标签退回「余额 …」；
+     *   · 账本跨天没刷新（date 不是今天）→ deepseek-balance 已把 todayUsage 置 null；
+     *   · 本币不是 CNY → **不能**塞进 todayCny（那一路径的标签写死 ￥，
+     *     会把美元金额标成人民币），仍按带符号的「余额 $…」显示。
      */
     const dsBal = summary.deepseekBalance;
     const dsOk = key === 'dsh' && dsBal && dsBal.ok === true && typeof dsBal.total === 'number';
@@ -795,11 +800,20 @@ function sourceMeterItems(summary) {
      * 写死 ¥ 会把美元余额标成人民币，数字对、单位错，比空着更坏。
      */
     const dsSym = dsOk ? currencySymbol(dsBal.currency) : '';
-    const spendLabel = dsOk ? `余额 ${dsSym}${fmtMoney(dsBal.total)}` : null;
+    const dsToday = dsOk && typeof dsBal.todayUsage === 'number' ? dsBal.todayUsage : null;
+    const dsTodayIsCny = dsToday != null && String(dsBal.currency || 'CNY').toUpperCase() === 'CNY';
+    if (key === 'dsh' && dsTodayIsCny) todayCny = dsToday;
+
+    const spendLabel = !dsOk
+      ? null
+      : dsToday != null
+        ? `今日 ${dsSym}${fmtMoney(dsToday)}`
+        : `余额 ${dsSym}${fmtMoney(dsBal.total)}`;
     let spendTip = null;
     if (dsOk) {
-      const parts = [`DeepSeek 官方余额 ${dsSym}${fmtMoney(dsBal.total)}`];
-      if (typeof dsBal.todayUsage === 'number') parts.push(`今日已用 ${dsSym}${fmtMoney(dsBal.todayUsage)}`);
+      const parts = [];
+      if (dsToday != null) parts.push(`今日已用 ${dsSym}${fmtMoney(dsToday)}`);
+      parts.push(`DeepSeek 余额 ${dsSym}${fmtMoney(dsBal.total)}`);
       if (dsBal.updatedAt) {
         const d = new Date(dsBal.updatedAt);
         parts.push(`更新于 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
