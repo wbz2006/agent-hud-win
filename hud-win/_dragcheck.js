@@ -107,7 +107,7 @@ async function geom(cdp) {
     const cls = document.body.className;
     return {
       sx: window.screenX, sy: window.screenY, iw: innerWidth, ih: innerHeight,
-      aw: screen.availWidth, bx: b.x, by: b.y, bw: b.width, bh: b.height,
+      aw: screen.availWidth, ah: screen.availHeight, bx: b.x, by: b.y, bw: b.width, bh: b.height,
       dragging: cls.includes('dragging'),
       hovering: cls.includes('hovering'),
       vertical: cls.includes('vertical'),
@@ -139,6 +139,49 @@ const cfgDock = () => {
     return '(读不到)';
   }
 };
+
+/** 读配置里的沿边落点（dockPos[dock]，DIP 中心坐标；没记过 = undefined）。 */
+const cfgDockPos = (dock) => {
+  try {
+    const pos = JSON.parse(fs.readFileSync(CFG, 'utf8')).dockPos || {};
+    const n = Number(pos[dock]);
+    return Number.isFinite(n) ? n : undefined;
+  } catch (_) {
+    return undefined;
+  }
+};
+
+/**
+ * 断言用的"应有的停靠矩形"：主进程 dockedRect 的等价算法。
+ * 有 dockPos[dock] 就按落点摆（夹在屏内），没有就居中。
+ */
+const MARGIN = 6;
+function expectDocked(g, dock) {
+  const bw = Math.round(g.bw);
+  const bh = Math.round(g.bh);
+  const off = cfgDockPos(dock);
+  if (dock === 'top') {
+    let x;
+    if (off === undefined) {
+      x = Math.round((g.aw - bw) / 2);
+    } else {
+      const lo = MARGIN + bw / 2;
+      const hi = g.aw - MARGIN - bw / 2;
+      x = Math.round(Math.min(hi, Math.max(lo, off)) - bw / 2);
+    }
+    return { x, y: MARGIN };
+  }
+  const x = dock === 'right' ? g.aw - MARGIN - bw : MARGIN;
+  let y;
+  if (off === undefined) {
+    y = Math.round((g.ah - bh) / 2);
+  } else {
+    const lo = MARGIN + bh / 2;
+    const hi = g.ah - MARGIN - bh / 2;
+    y = Math.round(Math.min(hi, Math.max(lo, off)) - bh / 2);
+  }
+  return { x, y };
+}
 
 /** 悬停态恢复：CDP 不动真实光标，主进程轮询看不到，只能靠 DOM mouseenter。 */
 async function reenter(cdp, g) {
@@ -230,8 +273,8 @@ async function main() {
     // ---- A. 按住不动再松手：不换边、不位移 ----
     /*
      * 拿起会让主进程立刻把窗口从悬停加宽收回收起宽度（这是修过两次的行为），
-     * 所以"悬停时的位置"不能当基准：松开后应回到**顶部居中的收起态矩形**上。
-     * 这里直接按"收起态 + 顶边居中"的几何判据断言，不依赖按下前的状态。
+     * 所以"悬停时的位置"不能当基准：松开后应回到**当前停靠矩形**上 ——
+     * 顶边 + 上次落点（dockPos.top，没记过则居中）。
      */
     let press = await pressPoint(cdp);
     await cdp.mouse('mouseMoved', press.x, press.y, 0);
@@ -243,11 +286,11 @@ async function main() {
     await cdp.mouse('mouseReleased', press.x, press.y, 0);
     await sleep(500);
     let g = await geom(cdp);
-    const expectX = (g.aw - g.iw) / 2;
+    const docked = expectDocked(g, 'top');
     check(
-      '按住 450ms 不动再松手：回到顶部居中的收起态（不算拖动）',
-      g.iw <= 170 && g.sy === 6 && Math.abs(g.sx - expectX) <= 2,
-      `${g.sx},${g.sy} w${g.iw}（期望 x≈${Math.round(expectX)} y=6 且 w≤170）`
+      '按住 450ms 不动再松手：回到当前停靠矩形（顶边 + 落点，不算拖动）',
+      g.iw <= 170 && g.sy === docked.y && Math.abs(g.sx - docked.x) <= 2,
+      `${g.sx},${g.sy} w${g.iw}（期望 x≈${docked.x} y=${docked.y} 且 w≤170）`
     );
     check('按住不动再松手：停靠边不变（慢速单击不算拖动）', cfgDock() === 'top', 'dock=' + cfgDock());
     check('单击后没有 dragging 残留', g.dragging === false);
@@ -311,9 +354,13 @@ async function main() {
     g = await geom(cdp);
     check('松手后 dragging 消失', g.dragging === false);
     check('顶部小位移松手后仍停靠顶部', cfgDock() === 'top', 'dock=' + cfgDock());
-    // 吸附回顶部居中：x = 工作区中心 - 胶囊宽/2
-    const centered = Math.abs(g.sx - Math.round((1707 - Math.round(g.bw)) / 2)) <= 3;
-    check('松手吸附回顶部居中', centered, `screenX=${g.sx} 期望≈${Math.round((1707 - Math.round(g.bw)) / 2)}`);
+    // 松手停在落点：x 应等于写盘后的 dockPos.top（不再弹回边中间）
+    const kept = expectDocked(g, 'top');
+    check(
+      '松手停在落点、不再弹回顶部中间',
+      Math.abs(g.sx - kept.x) <= 3,
+      `screenX=${g.sx} 期望≈${kept.x}（dockPos.top=${cfgDockPos('top')}）`
+    );
   }
 
   if (PHASE === 'B') {
@@ -341,7 +388,12 @@ async function main() {
     check('松手时是竖排', g.vertical === true, 'vertical=' + g.vertical);
     check('松手写盘 dock=left', cfgDock() === 'left', 'dock=' + cfgDock());
     check('吸附到左边缘（screenX=6）', Math.abs(g.sx - 6) <= 2, 'screenX=' + g.sx);
-    check('左侧竖条垂直居中', Math.abs(g.sy - Math.round((1019 - 130) / 2)) <= 3, 'screenY=' + g.sy);
+    const keepL = expectDocked(g, 'left');
+    check(
+      '左侧竖条停在落点（不弹回垂直居中）',
+      Math.abs(g.sy - keepL.y) <= 3,
+      `screenY=${g.sy} 期望≈${keepL.y}（dockPos.left=${cfgDockPos('left')}）`
+    );
     check('松手后胶囊宽度 = 竖条厚（52）', Math.round(g.bw) === 52, 'barWidth=' + g.bw);
     const anchor = await cdp.eval(`(async () => (await window.hud.getLayout()).anchor)()`);
     check('左停靠时面板朝屏幕内（anchor=right）', anchor === 'right', 'anchor=' + anchor);
@@ -363,7 +415,12 @@ async function main() {
     check('拖回顶部过程中翻回过横排', !!flippedBack, flippedBack ? `于 x=${flippedBack.x}` : '从未翻转');
     check('松手写盘 dock=top', cfgDock() === 'top', 'dock=' + cfgDock());
     check('吸附回顶部（screenY=6）', Math.abs(g.sy - 6) <= 2, 'screenY=' + g.sy);
-    check('顶部居中', Math.abs(g.sx - Math.round((1707 - Math.round(g.bw)) / 2)) <= 3, `screenX=${g.sx} 期望≈${Math.round((1707 - Math.round(g.bw)) / 2)}`);
+    const keepT = expectDocked(g, 'top');
+    check(
+      '顶部横条停在落点（不弹回中间）',
+      Math.abs(g.sx - keepT.x) <= 3,
+      `screenX=${g.sx} 期望≈${keepT.x}（dockPos.top=${cfgDockPos('top')}）`
+    );
     check('松手后是横排（body.vertical=false）', g.vertical === false);
     check('松手后窗口高度 = 栏高（48）', Math.round(g.ih) === 48, 'innerHeight=' + g.ih);
   }

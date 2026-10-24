@@ -139,12 +139,27 @@ const SIDE_PANEL_MIN_WIDTH = 52 + 8 + 420 + 8;
  * 几何统一走 dragGeo.dockedRect（拖动吸附与停靠共用同一套矩形算法）。
  */
 function dockRect(dock, bounds, currentWidth) {
-  return dragGeo.dockedRect(dock, bounds, {
-    barW: clampWidth(currentWidth),
-    barH: BAR.height,
-    sideW: SIDE_THICKNESS,
-    runH: SIDE_RUN,
-  });
+  return dragGeo.dockedRect(
+    dock,
+    bounds,
+    {
+      barW: clampWidth(currentWidth),
+      barH: BAR.height,
+      sideW: SIDE_THICKNESS,
+      runH: SIDE_RUN,
+    },
+    dockOffsetOf(dock)
+  );
+}
+
+/**
+ * 沿停靠边的落点位置（沿边轴的中心坐标，DIP）。
+ * 来自上一次松手时记下的 dockPos[dock]；没记过的边返回 null → 居中。
+ */
+function dockOffsetOf(dock) {
+  const pos = config.load().dockPos || {};
+  const n = Number(pos[dock]);
+  return Number.isFinite(n) ? n : null;
 }
 
 /** 把渲染层回报的宽度夹在合理区间内。 */
@@ -187,7 +202,7 @@ function currentWorkArea() {
  * 当前布局：停靠边 + 朝向 + 面板展开方向。
  *
  * 胶囊只停靠在三条边上：顶部横条、左侧/右侧竖条。位置由 dockRect() 按屏幕
- * 边缘算出来（拖动松手只是改变 dock，不保留任意坐标）。
+ * 边缘算出来，**沿边位置取上次松手记下的落点**（dockPos，没记过才居中）。
  * anchor 决定主进程怎么改窗口矩形，也要推给渲染层让 CSS 换面板方向。
  */
 function layoutOf(cfg) {
@@ -1044,8 +1059,9 @@ ipcMain.handle('hud:drag-end', (_e, commit) => {
   const dock = dragZone || dragGeo.zoneOf(b, screen.getDisplayMatching(b).workArea);
   dragZone = null;
   if (commit === true) {
-    const saved = config.save({ dock });
-    applyDock(); // 吸附到最近的边（居中停靠），顺带把朝向摆正
+    // 记下沿边落点：松手停在哪儿，以后重排就回哪儿（不弹回边中间）
+    const saved = config.save({ dock, dockPos: { ...(config.load().dockPos || {}), [dock]: dragGeo.axisCenter(b, dock) } });
+    applyDock(); // 吸附到最近的边（按落点停靠），顺带把朝向摆正
     return saved;
   }
   // 没拖过：不改配置，只把窗口收回原来的停靠矩形（抖了一下也回到原位）

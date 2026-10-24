@@ -63,13 +63,21 @@ const DEFAULTS = {
   collectIntervalMs: 30000,
   /**
    * 停靠位置：
-   *   top   → 屏幕顶部居中横条
-   *   left  → 贴左边缘竖条
-   *   right → 贴右边缘竖条
+   *   top   → 屏幕顶部横条（水平位置默认居中）
+   *   left  → 贴左边缘竖条（垂直位置默认居中）
+   *   right → 贴右边缘竖条（同上）
    * 拖动松手时吸附到离落点最近的一条边（上/左/右），左右两边是竖排。
    * 旧版本的 top-left / top-right / free 不再支持，读到就归一化成 top。
    */
   dock: 'top',
+  /**
+   * 沿停靠边的落点位置（沿边轴的中心坐标，DIP，按 dock 分边记）。
+   *
+   * 拖动松手时记下胶囊中心在边轴上的位置，重排时**原样放回** ——
+   * 不再把胶囊拽回边中间（用户反馈：拖到边上某处松手，应停在落点）。
+   * 没拖过 / 读不到的边退回居中；数值越界时加载时夹回屏内。
+   */
+  dockPos: {},
   /**
    * 圆环进度弧的分母：今日预算（人民币）。
    * 弧长 = 今日花费 / dailyBudgetCny。0 或负数视为禁用（弧只显示状态点）。
@@ -149,6 +157,17 @@ function normalizeDock(v) {
   return DOCKS.includes(v) ? v : 'top';
 }
 
+/** dockPos 只允许 top/left/right 三个数字键（沿边轴中心坐标，DIP）。 */
+function normalizeDockPos(v) {
+  const src = v && typeof v === 'object' ? v : {};
+  const out = {};
+  for (const d of DOCKS) {
+    const n = Number(src[d]);
+    if (Number.isFinite(n)) out[d] = n;
+  }
+  return out;
+}
+
 /** 读取配置（带默认值合并）。文件不存在或损坏时回退默认值。 */
 function load() {
   if (cache) return cache;
@@ -162,12 +181,14 @@ function load() {
       ...DEFAULTS,
       ...raw,
       dock: normalizeDock(raw.dock),
+      dockPos: normalizeDockPos(raw.dockPos),
       enabledSources: { ...DEFAULTS.enabledSources, ...(raw.enabledSources || {}) },
       relay: { ...DEFAULTS.relay, ...(raw.relay || {}) },
     };
   } catch {
     cache = {
       ...DEFAULTS,
+      dockPos: {},
       enabledSources: { ...DEFAULTS.enabledSources },
       relay: { ...DEFAULTS.relay },
     };
@@ -187,6 +208,7 @@ function save(patch) {
     if (!(k in DEFAULTS)) delete merged[k];
   }
   if ('dock' in merged) merged.dock = normalizeDock(merged.dock);
+  merged.dockPos = normalizeDockPos(merged.dockPos);
   merged.enabledSources = { ...DEFAULTS.enabledSources, ...(merged.enabledSources || {}) };
   merged.relay = { ...DEFAULTS.relay, ...(merged.relay || {}) };
 
@@ -211,4 +233,4 @@ function current() {
   return load();
 }
 
-module.exports = { load, save, current, DEFAULTS, CONFIG_FILE, DOCKS, normalizeDock };
+module.exports = { load, save, current, DEFAULTS, CONFIG_FILE, DOCKS, normalizeDock, normalizeDockPos };

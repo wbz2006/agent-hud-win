@@ -67,6 +67,24 @@ function zoneOf(rect, wa) {
   return dLeft <= dRight ? 'left' : 'right';
 }
 
+/**
+ * 胶囊在停靠边上的位置（沿边轴的中心坐标，DIP）。
+ * top → 中心 x；left/right → 中心 y。松手时记下它，重排时原样放回，
+ * 不再把胶囊拽回边中间（用户反馈：拖到边上某处松手，应停在落点）。
+ */
+function axisCenter(rect, dock) {
+  if (isVertical(dock)) return Math.round(rect.y + rect.height / 2);
+  return Math.round(rect.x + rect.width / 2);
+}
+
+/** 把沿边轴的中心坐标夹进工作区，保证胶囊整条都贴在边上、不出屏。 */
+function clampAxis(center, size, wa, vertical) {
+  const lo = (vertical ? wa.y : wa.x) + MARGIN + size / 2;
+  const hi = (vertical ? wa.y + wa.height : wa.x + wa.width) - MARGIN - size / 2;
+  if (hi < lo) return Math.round((lo + hi) / 2);
+  return Math.round(Math.min(hi, Math.max(lo, Number(center))));
+}
+
 /** 收起态胶囊尺寸（横条 = 内容宽×栏高，竖条 = 条厚×条长）。 */
 function pillSize(vertical, dims) {
   return vertical ? { width: dims.sideW, height: dims.runH } : { width: dims.barW, height: dims.barH };
@@ -84,20 +102,31 @@ function pillRect(centerX, centerY, vertical, dims, wa) {
 
 /**
  * 最终停靠矩形：
- *   top   → 顶部居中横条
- *   left  → 贴左边缘竖条，垂直居中
- *   right → 贴右边缘竖条，垂直居中
+ *   top   → 顶部横条（默认水平居中；传 offset 时停在沿边轴 offset 处）
+ *   left  → 贴左边缘竖条（默认垂直居中；传 offset 时停在 offset 处）
+ *   right → 贴右边缘竖条（同上）
+ *
+ * offset 是沿边轴的中心坐标（DIP），来自上一次松手时记下的落点
+ * （axisCenter）；缺省（没拖过/配置里没有）退回边中间 —— 保持旧默认。
  */
-function dockedRect(dock, wa, dims) {
+function dockedRect(dock, wa, dims, offset) {
   const vertical = isVertical(dock);
   const size = pillSize(vertical, dims);
+  const half = Math.round((vertical ? size.height : size.width) / 2);
   if (vertical) {
     const x = dock === 'right' ? wa.x + wa.width - MARGIN - size.width : wa.x + MARGIN;
-    const y = Math.round(wa.y + (wa.height - size.height) / 2);
+    const y =
+      offset == null || !Number.isFinite(Number(offset))
+        ? Math.round(wa.y + (wa.height - size.height) / 2)
+        : clampAxis(offset, size.height, wa, true) - half;
     return { x, y, width: size.width, height: size.height };
   }
-  const x = Math.round(wa.x + (wa.width - size.width) / 2);
-  return { x, y: wa.y + MARGIN, width: size.width, height: size.height };
+  const y = wa.y + MARGIN;
+  const x =
+    offset == null || !Number.isFinite(Number(offset))
+      ? Math.round(wa.x + (wa.width - size.width) / 2)
+      : clampAxis(offset, size.width, wa, false) - half;
+  return { x, y, width: size.width, height: size.height };
 }
 
 /**
@@ -127,6 +156,8 @@ module.exports = {
   isVertical,
   anchorOf,
   zoneOf,
+  axisCenter,
+  clampAxis,
   pillSize,
   pillRect,
   dockedRect,

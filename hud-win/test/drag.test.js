@@ -168,10 +168,35 @@ test('主进程注册了拖动三段 IPC，松手时写 dock（吸附边）', ()
   assert.match(MAIN_CODE, /ipcMain\.handle\(\s*'hud:drag-start'/);
   assert.match(MAIN_CODE, /ipcMain\.on\(\s*'hud:drag-move'/);
   assert.match(MAIN_CODE, /ipcMain\.handle\(\s*'hud:drag-end',\s*\(_e, commit\)/);
-  // 松手只写停靠边，不再保存任意坐标
-  assert.match(MAIN_CODE, /config\.save\(\{\s*dock\s*\}\)/);
+  // 松手写停靠边 + 沿边落点（dockPos[dock] = axisCenter），不再保存任意 2D 坐标
+  assert.match(MAIN_CODE, /config\.save\(\{\s*dock,\s*dockPos:/);
+  assert.match(MAIN_CODE, /dragGeo\.axisCenter\(b,\s*dock\)/);
   assert.doesNotMatch(MAIN_CODE, /freePos/);
   assert.doesNotMatch(MAIN_CODE, /dock:\s*'free'/);
+});
+
+test('沿边落点：松手记位置，重排原样放回（不再弹回边中间）', () => {
+  // dockRect 把 dockPos[dock] 传给 dockedRect；没记过的边返回 null → 居中
+  assert.match(MAIN_CODE, /function dockOffsetOf\(dock\)/);
+  assert.match(MAIN_CODE, /dockOffsetOf\(dock\)/);
+  // 几何：offset 缺省居中，有 offset 时夹在屏内
+  const g = require('../src/main/drag');
+  const wa = { x: 0, y: 0, width: 1707, height: 1019 };
+  const dims = { barW: 134, barH: 48, sideW: 52, runH: 130 };
+  const centered = g.dockedRect('top', wa, dims);
+  assert.equal(centered.x, Math.round((wa.width - dims.barW) / 2));
+  assert.equal(centered.y, g.MARGIN);
+  const atOffset = g.dockedRect('top', wa, dims, 300);
+  assert.equal(atOffset.x, 300 - Math.round(dims.barW / 2)); // 中心在 300，不弹回居中
+  // 越界落点夹回屏内：中心不能小于 MARGIN+半宽
+  const clamped = g.dockedRect('top', wa, dims, 10);
+  assert.ok(clamped.x >= g.MARGIN, `x=${clamped.x} 应 ≥ MARGIN`);
+  // 竖条同理
+  const vCentered = g.dockedRect('left', wa, dims);
+  assert.equal(vCentered.y, Math.round((wa.height - dims.runH) / 2));
+  const vAtOffset = g.dockedRect('left', wa, dims, 200);
+  assert.equal(vAtOffset.y, 200 - Math.round(dims.runH / 2));
+  assert.equal(vAtOffset.x, g.MARGIN);
 });
 
 test('拖动期间窗口尺寸钉死，不用 setPosition 累积漂移', () => {
