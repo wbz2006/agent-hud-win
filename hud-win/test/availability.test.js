@@ -3,11 +3,11 @@
 /**
  * 可用性统计与胶囊配色测试（静态防护）。
  *
- * 需求：
- *   - 2026-10-21：不可用时胶囊底色变暗红并浮动，悬停图标显示不可用提示；
- *     正常时胶囊底色为深绿并浮动；主色调仍是黑色（只做淡叠加）。
- *   - 2026-10-24 用户改口：**去掉正常态的绿色底色**（连同它的呼吸动画），
- *     healthy 回到纯黑胶囊；暗红告警保留。
+ * 需求演进：
+ *   - 2026-10-21：不可用暗红浮动、正常深绿浮动、主色调仍黑。
+ *   - 2026-10-24 第一次：去掉正常态绿底（healthy 回纯黑胶囊）。
+ *   - 2026-10-24 第二次（现行）：**胶囊底色完全不随可用性变化**——暗红底与
+ *     两个呼吸动画一并删除；状态只由圆环颜色、图标变色与悬停提示表达。
  *
  * 这类视觉状态容易出现「CSS 写了但 JS 没挂类」或「类挂了但 CSS 选择器对不上」，
  * 两边都不报错，只能静态对齐断言。「已删除」类断言一律在剥离注释后的文本上判。
@@ -87,41 +87,28 @@ test('聚合只看有样本的 mark（否则一项无样本就永远不变色）
   );
 });
 
-test('不可用态有底色规则；正常态不再染色（2026-10-24 去掉绿底）', () => {
+test('胶囊底色完全不随可用性变化（绿/红底与呼吸动画都已移除）', () => {
   const css = stripComments(stylesSrc);
-  assert.match(css, /body\[data-avail='unavailable'\]\s*\.bar/, '缺 unavailable 底色规则');
   assert.doesNotMatch(
     css,
-    /body\[data-avail='healthy'\]\s*\.bar/,
-    'healthy 不得再有底色规则（绿底已按用户要求删除）'
+    /body\[data-avail='[a-z]+'\]\s*\.bar/,
+    '胶囊不得再有任何可用性底色规则（2026-10-24 连暗红底一起删了）'
   );
+  assert.doesNotMatch(css, /bar-breathe/, '呼吸动画 keyframes 应全部删除');
+  assert.doesNotMatch(css, /rgba\(\s*10,\s*32,\s*22/, '旧绿底 rgba 残留');
+  assert.doesNotMatch(css, /rgba\(\s*38,\s*12,\s*12/, '旧暗红底 rgba 残留');
 });
 
-test('只有不可用态保留呼吸动画', () => {
+test('.bar 保留基础底色（panel-fill + hairline，不是被删空）', () => {
   const css = stripComments(stylesSrc);
-  assert.match(css, /@keyframes bar-breathe-bad/, '缺不可用态动画');
-  assert.doesNotMatch(css, /bar-breathe-ok/, '正常态动画应随绿底一起删除');
+  assert.match(css, /\.bar\s*\{[^}]*background:\s*var\(--panel-fill\)/, '.bar 必须保留基础底色');
+  assert.match(css, /\.bar\s*\{[^}]*border:\s*1px solid var\(--hairline\)/, '.bar 必须保留细边框');
 });
 
-test('主色调仍是黑色：不可用底色透明度够高，且绿色残留清干净', () => {
-  const css = stripComments(stylesSrc);
-  // 旧绿底 rgba(10,32,22,.86) 与绿发光 rgba(61,220,132,*) 都必须不存在
-  assert.doesNotMatch(css, /rgba\(\s*10,\s*32,\s*22/, '正常态绿底 rgba 残留');
-  assert.doesNotMatch(css, /rgba\(\s*61,\s*220,\s*132/, '绿色发光 rgba(61,220,132) 残留');
-
-  const bad = css.match(/body\[data-avail='unavailable'\]\s*\.bar\s*\{[^}]*background-color:\s*rgba\((\d+),\s*(\d+),\s*(\d+)/);
-  assert.ok(bad, '不可用态必须用 rgba 暗红');
-  for (const ch of bad.slice(1, 4)) assert.ok(Number(ch) <= 60, `红通道 ${ch} 过高，会失去黑色主调`);
-});
-
-test('悬停提示只对不可用的 mark 生效', () => {
+test('悬停提示只对不可用的 mark 生效（状态语义仍在图标层）', () => {
   assert.match(
     stylesSrc,
     /\.mark\[data-state='unavailable'\]:hover::after/,
     '不可用提示必须限定在 unavailable 状态'
   );
-});
-
-test('尊重系统「减少动态效果」设置', () => {
-  assert.match(stylesSrc, /prefers-reduced-motion/, '应在用户关闭动效时停掉呼吸动画');
 });

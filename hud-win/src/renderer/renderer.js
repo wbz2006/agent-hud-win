@@ -658,15 +658,13 @@ function markHtml(r, opts) {
         : '&mdash;';
 
   /*
-   * 可用性状态 → 胶囊底色。
+   * 可用性状态 → 只挂在 mark 上，**不再影响胶囊底色**。
    *
-   * 不可用（近 24h 有失败请求）→ 胶囊底色变**暗红**（浮动/呼吸感）
-   * 正常（近 24h 全成功）     → 保持黑胶囊（2026-10-24 用户要求去掉绿底）
-   * 无足够数据                 → 保持原样（黑胶囊 + 细边框）
-   *
-   * 状态同时以 data-state 挂在 .mark 上，供悬停提示与 CSS 使用；
-   * 整个胶囊的底色由 renderMarks 汇总后写到 body 的 data-avail 上
-   * （只有 unavailable 有对应的 CSS 规则，healthy 目前不染色）。
+   * 2026-10-24 用户决定：胶囊底色完全不随可用性变化（绿底、暗红底及呼吸动画
+   * 已全部删除，胶囊永远是纯黑）。状态语义改由这三处承担：
+   *   · 本函数写出的 data-state / mark--<state>（CSS 悬停提示、图标变色）
+   *   · 圆环颜色（正常绿 / 限流红 / 不可用灰）
+   *   · body[data-avail]（renderMarks 汇总写出，供调试与将来扩展，无 CSS 消费）
    */
   const barState = r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown';
 
@@ -871,17 +869,19 @@ function renderMarks(summary) {
   el.innerHTML = html || '<span class="mark-label" style="color:var(--text-dim)">暂无数据</span>';
 
   /*
-   * 胶囊整体底色：按各 mark 的可用性聚合。
+   * 整体可用性聚合：只写到 body[data-avail] 与 mark 类名，**不再驱动胶囊底色**。
    *
    * 聚合规则（只看**有样本**的 mark）：
-   *   任一有样本的 mark 不可用 → unavailable（暗红）
-   *   有样本的 mark 全部可用   → healthy（**不再染色**，2026-10-24 去掉绿底；
-   *                              这个值仍会写进 body.dataset.avail 与 mark 类名）
-   *   没有任何样本             → unknown（保持原黑）
+   *   任一有样本的 mark 不可用 → unavailable
+   *   有样本的 mark 全部可用   → healthy
+   *   没有任何样本             → unknown
+   *
+   * 2026-10-24：胶囊底色与可用性脱钩（绿/红底+呼吸动画全部移除），
+   * 这个聚合值现在只用于调试观察与将来扩展；视觉状态靠圆环颜色与悬停提示。
    *
    * 为什么要排除 unknown：Claude / DSH 的请求不进 CC Switch 账本
    * （Claude 走官方账号、DSH 走 WorkBuddy 直连），它们永远没有可用性样本。
-   * 如果要求"所有 mark 都 healthy"才判断，那一项无样本就永远把整条拖回 unknown，
+   * 若要求"所有 mark 都 healthy"才算，无样本项会永远把结论拖成 unknown，
    * 实测踩到过（body 的 data-avail 恒为 unknown）。所以只对"能判断的"下结论。
    */
   const states = items.map((r) => (r.degraded ? 'unavailable' : r.availability != null ? 'healthy' : 'unknown'));
