@@ -172,10 +172,11 @@ function readWhaleLedger({ now = Date.now() } = {}) {
  *     HUD 是独立进程、没有 DSH 的 browser-session secret，也不该去翻用户的
  *     ~/.dsh/.credentials.yaml 冒充浏览器。所以这条路只在"插件路由未走宿主鉴权"
  *     或"宿主栅栏不可用（插件只做回环/同源校验）"的 DSH 上才拿得到数。
- *   · findDshPort 选中的端口**可能不是 DSH**：本机 28317 上有个对任意路径都回
- *     `{"ret":1,"version":"3"}` 的服务，probePort 见到 200 就当命中。
- *     ⇒ 必须**校验响应形状**（ok:true + 数字余额），不能见 200 就信，
- *       否则余额区会被无关服务喂假数据。
+ *   · findDshPort 已修（2026-10-24）：探测先用插件心跳里的 pid 收敛到 DSH 自己的
+ *     端口、再用响应形状判命中，不再"全端口盲扫 + 见 200 就信"（旧判据曾把
+ *     4310 的二进制服务当 DSH、把请求字节写进 Cortex-Debug 的 55878 调试 socket）。
+ *     但**本调用方仍要校验响应形状**：鲸鱼路由与额度路由是两条不同的路由，
+ *     quota 的形状判据不覆盖 `ok:true + totalBalance`，别省掉这层。
  */
 async function readWhaleHttp({ timeoutMs = 4000, now = Date.now(), port: portOverride } = {}) {
   let port = portOverride;
