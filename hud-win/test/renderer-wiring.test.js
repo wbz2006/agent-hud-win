@@ -54,18 +54,6 @@ test('render() 必须调用 renderMarks 与 renderQuotas', () => {
   assert.match(body, /renderQuotas\s*\(/, 'render 应调用 renderQuotas');
 });
 
-test('限流区受 Beta 开关控制（rateSection.hidden）', () => {
-  const body = renderBody();
-  assert.match(body, /rateSection/, 'render 应操作 rateSection');
-  assert.match(body, /\.hidden\s*=/, '应设置 hidden 属性实现显隐');
-  // 判定条件必须读配置，不能写死
-  assert.match(
-    SRC,
-    /appConfig\s*&&\s*\(\s*appConfig\.rateEnabled\s*\|\|\s*appConfig\.betaRateFreeModel\s*\)/,
-    '限流显隐应依据 appConfig 的 rateEnabled / betaRateFreeModel'
-  );
-});
-
 test('每个被 render() 调用的 render* 函数都真实存在', () => {
   const body = renderBody();
   const called = [...body.matchAll(/\b(render[A-Z]\w*)\s*\(/g)].map((m) => m[1]);
@@ -84,19 +72,20 @@ test('面板区块顺序：额度区必须在最近会话之后', () => {
    * 用户明确要求：积分余额、积分包明细、各 provider 的今日本地消耗
    * 都属于"想细看才看"的次要信息，不该挤在首屏把模型用量和会话推下去。
    *
-   * 期望顺序：Tab → 概况 → 限流 → 模型用量 → 最近会话 → 额度
+   * 期望顺序：Tab → 概况 → 模型用量 → 最近会话 → 额度
+   * （限流区已随 Beta 限流监测整体删除，2026-10-25）
    */
   const indexHtml = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'renderer', 'index.html'),
     'utf8'
   );
   const ids = [
-    ...indexHtml.matchAll(/id="(panelTabs|allModels|rateSection|quotaSection|bars|sessions)"/g),
+    ...indexHtml.matchAll(/id="(panelTabs|allModels|quotaSection|bars|sessions)"/g),
   ].map((m) => m[1]);
 
   assert.deepEqual(
     ids,
-    ['panelTabs', 'allModels', 'rateSection', 'bars', 'sessions', 'quotaSection'],
+    ['panelTabs', 'allModels', 'bars', 'sessions', 'quotaSection'],
     `区块顺序不对，实际是 ${ids.join(' → ')}`
   );
 });

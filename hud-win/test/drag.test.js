@@ -243,10 +243,12 @@ test('拿起过就必须结束拖动，只有真拖过才写盘', () => {
 test('拖动中按预测吸附边就地翻转朝向（横条 ↔ 竖条）', () => {
   const fn = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.on('hud:drag-move'"));
   const body = fn.slice(0, fn.indexOf('ipcMain.handle'));
-  assert.match(body, /dragGeo\.zoneOf\(b,\s*wa\)/);
+  // 判定矩形：有光标坐标时以光标构造（2026-10-25 修"右缘够不着"），否则退回胶囊本体
+  assert.match(body, /const zoneRect = hasCursor/);
+  assert.match(body, /dragGeo\.zoneOf\(zoneRect,\s*wa\)/);
   assert.match(body, /if \(zone !== dragZone\)/);
-  // 以胶囊中心重设矩形（不是左上角），否则翻转会横漂
-  assert.match(body, /dragGeo\.pillRect\(b\.x \+ b\.width \/ 2,\s*b\.y \+ b\.height \/ 2,\s*vertical/);
+  // 以光标（或胶囊中心兜底）重设矩形（不是左上角），否则翻转会横漂
+  assert.match(body, /dragGeo\.pillRect\(px, py,\s*vertical/);
   assert.match(body, /sendLayout\(\{\s*vertical,\s*dock:\s*zone/);
 });
 
@@ -263,7 +265,7 @@ test('拖动落回用「最近一次非悬停测量」的收起宽度，不在�
   assert.match(MAIN_CODE, /if \(!hovering\) collapsedWidth = next;/);
   const start = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-start'"));
   const startBody = start.slice(0, start.indexOf('ipcMain.on'));
-  assert.match(start, /'hud:drag-start',\s*\(\)\s*=>/);
+  assert.match(start, /'hud:drag-start',\s*\(_e, cx, cy\)\s*=>/);
   assert.match(startBody, /contentWidth = clampWidth\(collapsedWidth\);/);
   assert.doesNotMatch(startBody, /widthHint|Number\(width/);
 });
@@ -283,11 +285,12 @@ test('拖动期间冻结 hover / 测量 / 展开，防止胶囊抖动', () => {
 });
 
 test('preload 暴露 dragStart / dragMove / dragEnd', () => {
-  assert.match(PRELOAD, /dragStart:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-start'\)/);
+  assert.match(PRELOAD, /dragStart:\s*\(cx,\s*cy\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-start',\s*cx,\s*cy\)/);
   // 收起宽度由主进程 collapsedWidth 提供，测量上报带"是否悬停"标记
   assert.match(PRELOAD, /measure:\s*\(w,\s*hovering\)\s*=>\s*ipcRenderer\.invoke\('hud:measure',\s*w,\s*!!hovering\)/);
   assert.match(PRELOAD, /collapsedWidth/);
-  assert.match(PRELOAD, /dragMove:\s*\(dx,\s*dy\)\s*=>\s*ipcRenderer\.send\('hud:drag-move',\s*dx,\s*dy\)/);
+  // dragMove 带光标绝对位置（cx/cy）：吸附边判定用光标而非胶囊中心
+  assert.match(PRELOAD, /dragMove:\s*\(dx,\s*dy,\s*cx,\s*cy\)\s*=>\s*ipcRenderer\.send\('hud:drag-move',\s*dx,\s*dy,\s*cx,\s*cy\)/);
 });
 
 test('渲染层拖动全程：pointerdown/move/up 都挂在胶囊上，松手提交', () => {
@@ -295,7 +298,7 @@ test('渲染层拖动全程：pointerdown/move/up 都挂在胶囊上，松手提
   assert.match(RENDERER_CODE, /bar\.addEventListener\('pointermove',\s*onBarPointerMove\)/);
   assert.match(RENDERER_CODE, /bar\.addEventListener\('pointerup',\s*endDrag\)/);
   // 拿起时不再现量宽度：主进程按 collapsedWidth（最近一次非悬停测量）收窗口
-  assert.match(RENDERER_CODE, /dragStart\(\)/);
+  assert.match(RENDERER_CODE, /dragStart\(drag\.lx, drag\.ly\)/);
   assert.doesNotMatch(RENDERER_CODE, /dragStart\(need/);
   const armFn = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function armDrag('));
   const armBody = armFn.slice(0, armFn.indexOf('\n}'));
@@ -304,7 +307,7 @@ test('渲染层拖动全程：pointerdown/move/up 都挂在胶囊上，松手提
   // 测量上报必须带悬停标记，否则加宽值会被主进程当成收起态宽度
   assert.match(RENDERER_CODE, /window\.hud\.measure\(need, hovering\)/);
   assert.match(RENDERER_CODE, /const hovering = document\.body\.classList\.contains\('hovering'\) \|\| panelOpen/);
-  assert.match(RENDERER_CODE, /dragMove\(dx,\s*dy\)/);
+  assert.match(RENDERER_CODE, /dragMove\(dx, dy, drag\.lx, drag\.ly\)/);
   assert.match(RENDERER_CODE, /dragEnd\(moved\)/);
   assert.match(RENDERER_CODE, /classList\.add\('dragging'\)/);
   assert.match(RENDERER_CODE, /classList\.remove\('dragging'\)/);
@@ -337,10 +340,11 @@ test('测量胶囊宽度时关掉过渡（否则量到 width 过渡的中间值�
 test('拖动中显示虚线边框，并且不显示面板', () => {
   assert.match(CSS_CODE, /body\.dragging \.bar::before/);
   assert.match(CSS_CODE, /border:\s*1\.5px dashed/);
-  // 虚线画在胶囊内侧（inset 2px）：画在外扩位置会被窗口边界裁掉，
-  // 而胶囊永远贴着屏幕边（上下左右 6px 边距），靠边那侧的虚线就没了
+  // 虚线正好镶嵌在胶囊外缘（inset 0，2026-10-25 用户要求）：虚线画在元素
+  // 边框内沿、与胶囊边缘齐平。仍不得用负 inset —— 那会外扩出窗口矩形，
+  // 胶囊贴屏时靠边那侧的虚线会被裁掉
   const dashRule = CSS_CODE.slice(CSS_CODE.indexOf('body.dragging .bar::before'));
-  assert.match(dashRule.slice(0, dashRule.indexOf('}')), /inset:\s*2px/);
+  assert.match(dashRule.slice(0, dashRule.indexOf('}')), /inset:\s*0/);
   assert.doesNotMatch(dashRule.slice(0, dashRule.indexOf('}')), /inset:\s*-/);
   assert.match(CSS_CODE, /border-radius:\s*999px/);
   assert.match(CSS_CODE, /body\.dragging \.panel \{ display: none; \}/);
@@ -389,4 +393,41 @@ test('拖动触发键是右键（button=2），左键不再搬胶囊', () => {
   const move = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function onBarPointerMove('));
   const moveBody = move.slice(0, move.indexOf('\n}'));
   assert.match(moveBody, /\(e\.buttons & 2\) === 0/, '右键已松开时必须结束拖动，避免 dragging 残留');
+});
+
+test('拖动中的吸附边判定用光标位置（水平胶囊贴边时中心判定永远翻不成竖条）', () => {
+  // 横条被 clamp 在离右缘约 140px 处时，胶囊中心到顶边的距离恒小于到右缘的
+  // 距离 —— 按中心判定永远翻不成竖条，用户按住拖到右缘也够不着，松手才突然
+  // 贴上去。必须用光标位置判定（渲染层每帧带 e.screenX/screenY）。
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+  const mainCode = mainSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const fn = mainCode.slice(mainCode.indexOf("ipcMain.on('hud:drag-move'"));
+  const body = fn.slice(0, fn.indexOf('\n});'));
+  assert.match(body, /Number\.isFinite\(Number\(cx\)\)/, 'drag-move 必须接收光标绝对坐标');
+  assert.match(body, /dragGeo\.zoneOf\(zoneRect, wa\)/, '吸附边必须按光标构造的矩形判定');
+  assert.match(body, /dragGeo\.pillRect\(px, py/, '翻转矩形必须以光标为基准');
+  // 渲染层每帧带上光标绝对位置（旧调用方不传时主进程退回中心判定）
+  assert.match(RENDERER_CODE, /dragMove\(dx, dy, drag\.lx, drag\.ly\)/);
+});
+
+test('卡片展开时胶囊保持紧凑（不铺满窗口宽度）', () => {
+  assert.match(
+    CSS_CODE,
+    /body\.panel-open:not\(\.vertical\) \.bar \{\s*width: fit-content;\s*margin: 0 auto;/,
+    '面板打开时 .bar 必须 fit-content 居中，否则胶囊被拉成通栏'
+  );
+});
+
+test('拖动为绝对定位（窗口 = 光标 - 抓取偏移），morph 后重算偏移', () => {
+  // 增量累积 + morphShift 补偿会把窗口拽回"抓取点偏移"那么远：光标被屏幕
+  // 边缘挡住不再产生增量时，窗口永远停在离边一段距离处（2026-10-25 实测）。
+  // 绝对定位没有累积量，天然跟手。
+  const fn = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.on('hud:drag-move'"));
+  const body = fn.slice(0, fn.indexOf('ipcMain.handle'));
+  assert.match(body, /if \(dragGrab && hasCursor\)/, '必须优先走绝对定位分支');
+  assert.match(body, /clampPos\(Number\(cx\) - dragGrab\.dx, Number\(cy\) - dragGrab\.dy/, '窗口 = 光标 - 抓取偏移');
+  assert.match(body, /dragGrab = \{ dx: Number\(cx\) - pill\.x/, 'morph 后必须重算抓取偏移');
+  const start = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-start'"));
+  const startBody = start.slice(0, start.indexOf('\n});'));
+  assert.match(startBody, /dragGrab\s*=/, 'drag-start 必须记录抓取偏移');
 });

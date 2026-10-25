@@ -53,8 +53,10 @@ contextBridge.exposeInMainWorld('hud', {
    * （每帧一次），拖动中还会做横竖翻转与吸附边预测；dragEnd 才把
    * dock='top'|'left'|'right' 写进 config.json。
    */
-  dragStart: () => ipcRenderer.invoke('hud:drag-start'),
-  dragMove: (dx, dy) => ipcRenderer.send('hud:drag-move', dx, dy),
+  /** 拿起。带光标绝对位置（DIP）：主进程记录抓取偏移，此后逐帧绝对定位。 */
+  dragStart: (cx, cy) => ipcRenderer.invoke('hud:drag-start', cx, cy),
+  /** 增量移动 + 光标绝对位置（screenX/screenY，DIP）：吸附边判定用光标而非胶囊中心。 */
+  dragMove: (dx, dy, cx, cy) => ipcRenderer.send('hud:drag-move', dx, dy, cx, cy),
   /**
    * 松手。commit=true 才把吸附边写进 config.json；但拿起过就一定要调用它，
    * 否则主进程会一直停在"拖动中"，悬停与窗口自适应全部失效。

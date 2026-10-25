@@ -763,7 +763,7 @@ function pushData() {
    * 必须把当前配置一起发给 worker。
    *
    * worker 的 runOnce(cfg) 用的是 msg.config，不带就是 undefined ——
-   * 于是 cfg.costMode / cfg.rateEnabled / cfg.enabledSources 全部取不到值，
+   * 于是 cfg.costMode / cfg.enabledSources 全部取不到值，
    * 设置里的改动（如「金额计价」切到 real）要等下一次才生效，甚至完全不生效。
    *
    * 以前设置页保存后会 config.save() 再触发采集，但保存的是主进程的 config，
@@ -889,7 +889,7 @@ ipcMain.handle('hud:open-settings', () => {
  *   - dock              → 悬浮条位置（top / left / right）
  *   - collectIntervalMs → 定时器间隔
  *   - enabledSources    → 下次采集生效
- *   - rateGraceMinutes / ringMode / rateOpenCode → 渲染层读取
+ *   - ringMode          → 渲染层读取
  */
 ipcMain.handle('hud:save-settings', (_e, patch) => {
   const before = config.load();
@@ -990,8 +990,13 @@ let morphShift = null;
  * 所以每次 move 都显式带上这个尺寸，尺寸漂了也顺手纠回去。
  */
 let dragSize = null;
+/**
+ * 绝对定位模式的抓取偏移（光标相对窗口左上角，DIP）。
+ * drag-start 时记录，morph 重摆时重算；null = 增量模式（旧验证脚本）。
+ */
+let dragGrab = null;
 
-ipcMain.handle('hud:drag-start', () => {
+ipcMain.handle('hud:drag-start', (_e, cx, cy) => {
   if (!win || win.isDestroyed()) return { ok: false };
   /*
    * 落回收起态宽度：必须用 collapsedWidth（最近一次非悬停测量），
@@ -1014,18 +1019,30 @@ ipcMain.handle('hud:drag-start', () => {
   expanded = false;
   dragSize = { width: barRect.width, height: barRect.height };
   win.setBounds(barRect);
+  /*
+   * 绝对定位模式：记下抓取偏移（光标相对窗口左上角），此后每帧
+   * 窗口 = 光标 - 偏移，不再累积增量 —— 形变/钳位都不会引入漂移。
+   * cx/cy 由渲染层带来（e.screenX/screenY，DIP 坐标系）；不传（旧验证
+   * 脚本）则 dragGrab 为 null，退回增量 + morphShift 补偿的旧路径。
+   */
+  dragGrab =
+    Number.isFinite(Number(cx)) && Number.isFinite(Number(cy))
+      ? { dx: Number(cx) - barRect.x, dy: Number(cy) - barRect.y }
+      : null;
   sendLayout(layout);
   return { ok: true, rect: barRect };
 });
 
 /** 拖动增量是高频消息（每帧一次），用 send/on 而不是 invoke，避免每帧一个 Promise。 */
-ipcMain.on('hud:drag-move', (_e, dx, dy) => {
+ipcMain.on('hud:drag-move', (_e, dx, dy, cx, cy) => {
   if (!dragging || !win || win.isDestroyed()) return;
+  const hasCursor = Number.isFinite(Number(cx)) && Number.isFinite(Number(cy));
 
   let mx = Number(dx) || 0;
   let my = Number(dy) || 0;
   if (morphShift) {
     // 上一条消息里翻转朝向时已经重摆过矩形，这段位移不能再算一遍
+    // （仅增量模式需要：绝对定位模式在 morph 处直接重算抓取偏移）
     mx -= morphShift.x;
     my -= morphShift.y;
     morphShift = null;
@@ -1042,29 +1059,63 @@ ipcMain.on('hud:drag-move', (_e, dx, dy) => {
     b = win.getBounds();
   }
   const wa = screen.getDisplayMatching(b).workArea;
-  const p = dragGeo.clampPos(b.x + mx, b.y + my, b.width, b.height, wa);
-  if (p.x !== b.x || p.y !== b.y) {
-    win.setBounds({ x: p.x, y: p.y, width: dragSize ? dragSize.width : b.width, height: dragSize ? dragSize.height : b.height });
+
+  if (dragGrab && hasCursor) {
+    /*
+     * 绝对定位模式：窗口左上角 = 光标 - 抓取偏移，逐帧钳到工作区内。
+     * 增量累积 + 补偿的旧路径有个挥之不去的病：morph 重摆矩形后要把
+     * 重摆量从下一条增量里扣掉，扣掉的比例正好是"抓取点偏移 - 形变半径"，
+     * 结果窗口不再严格跟手 —— 光标顶到屏幕边缘不再产生增量时，窗口就
+     * 永远停在离边一段距离处（2026-10-25 用户实测"拖到最右边也没贴边"）。
+     * 绝对定位没有累积量，形变后重算一次抓取偏移即可，天然跟手。
+     */
+    const p = dragGeo.clampPos(Number(cx) - dragGrab.dx, Number(cy) - dragGrab.dy, b.width, b.height, wa);
+    if (p.x !== b.x || p.y !== b.y) {
+      win.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height });
+    }
+  } else {
+    const p = dragGeo.clampPos(b.x + mx, b.y + my, b.width, b.height, wa);
+    if (p.x !== b.x || p.y !== b.y) {
+      win.setBounds({ x: p.x, y: p.y, width: dragSize ? dragSize.width : b.width, height: dragSize ? dragSize.height : b.height });
+    }
   }
 
   /*
    * 吸附边变了就翻转朝向：横条 ↔ 竖条。
    *
-   * 必须**以胶囊中心为基准**重设矩形：窗口宽度从 134 变 52 时若固定左上角，
-   * 胶囊会横漂一截；以中心重设后它就在光标底下原地变形。
+   * 判定用**光标位置**而不是胶囊中心（2026-10-25 修"右边够不着"）：
+   * 横条被 clamp 在离右缘 140px 处时，胶囊中心到顶边的距离永远小于到
+   * 右缘的距离 —— 按中心判定永远翻不成竖条，用户按住拖到右缘也够不着，
+   * 松手才按最后一次判定突然贴上去。光标在哪，吸附边就看到哪。
+   * cx/cy 由渲染层每帧带来（e.screenX/screenY，与主进程同一 DIP 坐标系）；
+   * 旧调用方（验证脚本）不传时退回胶囊中心判定。
    *
-   * 矩形重摆会让窗口左上角跳一段（中心不变、尺寸变了）。渲染层只看得到
-   * 自己的 screenX/screenY，它并不知道这层修正，会把这段位移叠进下一条
-   * 增量里 —— 翻转一次就多移一次（竖条越拖越靠外，最后被夹在屏幕边上）。
-   * 所以这里把左上角的变化量记下来，下一条增量先扣掉它。
+   * 翻转矩形以光标为基准重设：窗口宽度从 134 变 52 时若固定左上角，
+   * 胶囊会横漂一截；以光标重设后它就在光标底下原地变形。
+   *
+   * 矩形重摆会让窗口左上角跳一段。渲染层只看得到自己的 screenX/screenY，
+   * 它并不知道这层修正，会把这段位移叠进下一条增量里 —— 翻转一次就多移
+   * 一次（竖条越拖越靠外，最后被夹在屏幕边上）。所以这里把左上角的变化量
+   * 记下来，下一条增量先扣掉它。
    */
   b = win.getBounds();
-  const zone = dragGeo.zoneOf(b, wa);
+  const zoneRect = hasCursor
+    ? { x: Number(cx) - b.width / 2, y: Number(cy) - b.height / 2, width: b.width, height: b.height }
+    : b;
+  const zone = dragGeo.zoneOf(zoneRect, wa);
   if (zone !== dragZone) {
     dragZone = zone;
     const vertical = zone !== 'top';
-    const pill = dragGeo.pillRect(b.x + b.width / 2, b.y + b.height / 2, vertical, barDims(), wa);
-    morphShift = { x: pill.x - b.x, y: pill.y - b.y };
+    const px = hasCursor ? Number(cx) : b.x + b.width / 2;
+    const py = hasCursor ? Number(cy) : b.y + b.height / 2;
+    const pill = dragGeo.pillRect(px, py, vertical, barDims(), wa);
+    if (dragGrab && hasCursor) {
+      // 绝对定位：新形状以光标为中心 → 新抓取偏移 = 半宽/半高，无补偿量
+      dragGrab = { dx: Number(cx) - pill.x, dy: Number(cy) - pill.y };
+    } else {
+      // 增量模式：把重摆量记下来，下一条增量扣掉（旧行为）
+      morphShift = { x: pill.x - b.x, y: pill.y - b.y };
+    }
     dragSize = { width: pill.width, height: pill.height };
     win.setBounds(pill);
     sendLayout({ vertical, dock: zone, anchor: dragGeo.anchorOf(zone) });
@@ -1084,11 +1135,13 @@ ipcMain.handle('hud:drag-end', (_e, commit) => {
     dragZone = null;
     morphShift = null;
     dragSize = null;
+    dragGrab = null;
     return config.load();
   }
   dragging = false;
   morphShift = null;
   dragSize = null;
+  dragGrab = null;
   /*
    * 落地宽度取 collapsedWidth（最近一次非悬停测量），与 drag-start 对称：
    * 拖动期间窗口是钉死的，任何残留的加宽值都不该影响"落到哪条边、多宽"。

@@ -85,16 +85,16 @@ body.hovering .bar { cursor: grab; }
 body.dragging .bar { cursor: grabbing; }
 
 /*
- * 虚线必须画在胶囊**内侧**（inset 2px），不能外扩：
- * 窗口矩形正好就是胶囊本身，画在 -6px 处的边框落在窗口外，会被直接裁掉——
- * 而胶囊永远贴在屏幕边上（上 6px / 左右 6px 边距），靠边那一侧的虚线于是
- * 整条看不见（用户反馈："靠近屏幕边框的位置的虚线无法显示"）。
- * 内侧描边不受窗口边界影响，任何位置都完整可见，也与原项目的 inset 2 一致。
+ * 虚线必须**正好镶嵌在胶囊外缘**（inset 0，2026-10-25 用户要求）：
+ * 之前 inset 2px 让虚线悬浮在胶囊内侧、与边沿之间隔着一条暗带（虚线向外投的
+ * box-shadow 又加深了这条带），看起来像"虚线没包裹在 bar 上"。
+ * inset 0 时虚线画在元素边框内沿、与胶囊边缘齐平 —— 仍然在窗口矩形内，
+ * 贴屏那侧不会被裁掉（只有负 inset 才会外扩出窗口）。
  */
 body.dragging .bar::before {
   content: '';
   position: absolute;
-  inset: 2px;
+  inset: 0;
   border: 1.5px dashed rgba(255, 255, 255, 0.9);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.025); /* 原项目 outline.fillColor */
@@ -104,6 +104,20 @@ body.dragging .bar::before {
 
 /* 拖的是胶囊本身，面板收起（主进程同时也会把窗口落回胶囊矩形） */
 body.dragging .panel { display: none; }
+
+/*
+ * 卡片展开时胶囊保持紧凑（不铺满窗口宽度）——2026-10-25 用户反馈
+ * "展开卡片时胶囊会完全展开"。
+ *
+ * 窗口为面板加宽后，.bar 作为块级子元素默认铺满整行，三个环漂浮在一条
+ * 通栏大黑条上。width: fit-content 让它缩回胶囊本身的大小，margin auto
+ * 水平居中（窗口对称加宽，居中 = 胶囊原地不动）。竖排不参与：竖条宽度
+ * 锁死 52px（body.vertical 的 min/max-width 优先级更高，但显式排除更稳）。
+ */
+body.panel-open:not(.vertical) .bar {
+  width: fit-content;
+  margin: 0 auto;
+}
 
 /* 测量专用：量胶囊宽度时临时关掉子元素过渡，避免量到 width 过渡的中间值。
  * 只在同一个同步任务里加上再摘掉，不会有可见的重绘。 */
@@ -121,14 +135,13 @@ body.measuring .bar > * { transition: none !important; }
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end; /* 环是绝对居中；统计与按钮靠右 */
+  justify-content: center; /* 胶囊里只剩环组（统计与按钮已移除），始终居中 */
   gap: 12px;
-  /* 固定高度，不能用 100% —— 展开时窗口变高到 520，
+  /* 固定高度，不能用 100% —— 展开时窗口变高，
    * 100% 会让胶囊变成纵向巨椭圆（实测整块黑椭圆盖住面板）。 */
   height: 48px;
   flex: 0 0 48px;
-  /* 收起态只有环（绝对居中），左右各留 8px 保证胶囊两端有呼吸；
-   * 悬停态 stats/按钮靠右，右侧同样 8px。 */
+  /* 收起态与悬停态都只有环组（悬停多出金额标签），左右各留 8px 呼吸。 */
   padding: 0 var(--inset-right) 0 var(--inset-left);
   background: var(--panel-fill);
   border: 1px solid var(--hairline);
@@ -207,8 +220,7 @@ body.vertical .mark[data-state='unavailable']:hover::after {
  * 圆环组定位。
  *
  * 收起态：只有环 → 组必须相对胶囊水平居中。
- * 悬停态：环 + 统计 + 按钮 → 环退到左边，统计与按钮占右侧，
- *         否则环（绝对定位居中）会和统计文字直接叠在一起（截图实测重叠成一片）。
+ * 悬停态：环 + 金额标签（统计与按钮已移除）→ 回归 flex 子项。
  */
 .marks {
   position: absolute;
@@ -222,12 +234,11 @@ body.vertical .mark[data-state='unavailable']:hover::after {
   -webkit-app-region: no-drag;
 }
 /*
- * 悬停：环靠左让位给统计与按钮。
+ * 悬停：环组回归 flex 子项（position: static）。
  *
- * 必须**回归 flex 子项**（position: static）而不是继续绝对定位：
- * 金额标签长度会变（「￥1.18」 vs 「0 积分」 vs 「—」），绝对定位的 marks
- * 不参与布局，标签一长就直接压在右侧统计文字上（实测「0 积分」与「91M」重叠）。
- * 变成 flex 子项后宽度自然被计入，统计被自动推到右边。
+ * 金额标签长度会变（「￥1.18」 vs 「余额 $3.02」 vs 「—」），绝对定位的
+ * marks 不参与布局，标签一长就可能溢出胶囊；变成 flex 子项后宽度自然
+ * 被计入，measureBar 量到的悬停宽度也随之包含标签。
  */
 body.hovering .marks {
   position: static;
@@ -266,24 +277,32 @@ body.hovering .mark-cost {
 /*
  * 竖排：金额改到环的**下方**显示，而不是右侧。
  *
- * 竖条只有 52px 宽，金额放右侧会溢出被面板盖住（之前直接隐藏了，导致用户
- * 看不到花费信息）。竖排的可用空间是纵向的，所以把 cell 改成纵向排列，
- * 金额落在环下面，居中对齐，既不溢出也不破坏对称。
+ * 竖条只有 52px 宽（内容区 34px），金额放右侧会溢出被面板盖住。竖排的可用
+ * 空间是纵向的，所以把 cell 改成纵向排列，金额落在环下面，居中对齐。
+ * 三个 max-width 兜底：标签文字再宽（不同系统字体的 ¥ 字形宽度不同）
+ * 也只会在 34px 内容区内截断，不会把胶囊撑破、糊到面板上。
  */
+body.vertical .marks {
+  max-width: 100%;
+}
 body.vertical .mark {
   flex-direction: column;
   gap: 3px;
+  max-width: 100%;
 }
 body.vertical .mark-cost {
   display: none; /* 默认（收起）不显示 */
   font-size: 10px; /* 竖条窄，字号收小一点 */
   line-height: 1;
   text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 body.vertical.hovering .mark-cost {
   display: block;
 }
-
 /* 圆环 + logo 叠放（原项目 ZStack） */
 .mark-icon {
   position: relative;
@@ -395,25 +414,7 @@ body.vertical.hovering .mark-cost {
 }
 .mark-more:hover { background: rgba(255, 255, 255, 0.15); color: var(--text); }
 
-/* 面板里的全部模型网格 */
-.all-models {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 6px;
-  margin-bottom: 14px;
-}
-.mark.grid-item {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
-  align-items: center;
-  gap: 2px 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-}
-.mark.grid-item .mark-icon { grid-row: 1 / span 2; }
-.mark.grid-item .mark-label { min-width: 0; text-align: left; font-size: 11px; }
+/* 卡片网格视图已移除（2026-10-25），grid-meta 仅剩 markHtml 死分支引用 */
 .grid-meta {
   font-size: 9px;
   color: var(--text-dim);
@@ -422,19 +423,7 @@ body.vertical.hovering .mark-cost {
   text-overflow: ellipsis;
 }
 
-/* ---------- 右侧总览统计 ---------- */
-.stats {
-  display: flex;
-  gap: 11px;
-  margin-left: auto;
-  flex: 0 0 auto;
-  -webkit-app-region: no-drag;
-}
-.stat { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; }
-.stat-v { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.stat-k { font-size: 8px; color: var(--text-dim); white-space: nowrap; }
-
-/* ---------- 图标按钮 ---------- */
+/* ---------- 图标按钮（卡片右上角的 ⚙ / ✕ 用） ---------- */
 .icon-btn {
   -webkit-app-region: no-drag;
   width: 22px;
@@ -454,17 +443,9 @@ body.vertical.hovering .mark-cost {
 .icon-btn:hover { background: rgba(255, 255, 255, 0.18); color: var(--text); }
 
 /* ============================================================
- * 收起态 = 原版 Simple 形态：只有圆环，没有统计、没有按钮。
- * 悬停才露出统计与按钮（原版这些信息在悬停面板/菜单栏里）。
- * 用 display:none 而非 opacity —— measureBar() 靠子元素宽度求和，
- * display:none 的宽度为 0，窗口才能真正贴合"纯环"的内容宽度。
- * 注意：必须放在 .stats / .icon-btn 定义**之后**，否则被它们的
- * display:flex 覆盖（此前踩过，收起态统计仍然显示）。
+ * 胶囊内容 = 纯环（收起）或 环 + 金额（悬停）。
+ * 旧的统计区与按钮组已从 DOM 移除（2026-10-25），无需再按悬停态切换显隐。
  * ============================================================ */
-.stats,
-.bar > .icon-btn { display: none; }
-body.hovering .stats { display: flex; }
-body.hovering .bar > .icon-btn { display: flex; }
 
 /* ---------- 悬停展开面板 ---------- */
 /* 面板是独立浮起的一张卡片，浮在栏下方。
@@ -506,93 +487,6 @@ body.hovering .bar > .icon-btn { display: flex; }
   margin: 4px 0 8px;
 }
 .panel-time { text-transform: none; letter-spacing: 0; }
-
-.rates { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.rate-row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 5px 7px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  border-left: 2px solid transparent;
-}
-.rate-row.limited {
-  background: rgba(255, 69, 58, 0.12);
-  border-left-color: var(--critical);
-}
-.rate-top { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
-.rate-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rate-state { font-size: 10px; font-weight: 700; flex: 0 0 auto; }
-.rate-state.ok { color: var(--ok); }
-.rate-state.limited { color: var(--critical); }
-.rate-meta { font-size: 9px; color: var(--text-dim); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-.rate-provider {
-  font-size: 9px; color: var(--text-dim); flex: 0 0 auto;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px; padding: 1px 4px;
-}
-.rate-bar {
-  display: block; height: 3px; border-radius: 2px;
-  background: rgba(255, 255, 255, 0.09); overflow: hidden;
-}
-.rate-bar-fill { display: block; height: 100%; border-radius: 2px; }
-.rate-hint { font-size: 9px; color: var(--text-dim); margin: 4px 0 10px; }
-
-.quotas { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
-.quota-row { display: flex; flex-direction: column; gap: 3px; }
-.quota-top { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
-.quota-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.quota-calls { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: 10px; }
-.quota-credit { font-variant-numeric: tabular-nums; font-weight: 600; }
-.quota-credit.free { color: var(--ok); }
-.quota-credit.unknown { color: var(--text-dim); font-weight: 400; }
-.quota-track {
-  display: block; height: 4px; border-radius: 2px;
-  background: rgba(255, 255, 255, 0.09); overflow: hidden;
-}
-.quota-fill { display: block; height: 100%; border-radius: 2px; }
-.quota-packs { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 2px; }
-.quota-pack {
-  font-size: 9px; color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px; padding: 1px 4px;
-}
-.quota-sep {
-  font-size: 9px; color: var(--text-dim);
-  text-transform: uppercase; letter-spacing: 0.5px;
-  margin: 8px 0 2px; padding-top: 7px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
-.bar-label {
-  width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-dim);
-}
-.bar-track {
-  display: block; flex: 1 1 auto; height: 6px; border-radius: 3px;
-  background: rgba(255, 255, 255, 0.09); overflow: hidden;
-}
-.bar-fill { display: block; height: 100%; border-radius: 3px; }
-.bar-val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
-
-.sessions { display: flex; flex-direction: column; gap: 5px; }
-.sess-row {
-  display: flex; justify-content: space-between; gap: 8px;
-  font-size: 11px; padding: 3px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-.sess-row:last-child { border-bottom: none; }
-.sess-name { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sess-tag {
-  display: inline-block; min-width: 26px; margin-right: 5px;
-  padding: 0 4px; border-radius: 4px;
-  background: rgba(255, 255, 255, 0.13); color: var(--text);
-  font-size: 9px; font-weight: 700; text-align: center; vertical-align: 1px;
-}
-.sess-tok { font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 
 .err {
   position: absolute; top: 50px; left: 8px; right: 8px;
@@ -672,32 +566,6 @@ body.vertical .marks {
   height: auto;
 }
 
-/* 竖排时统计与按钮纵向排在环下方，不再靠右 */
-body.vertical .stats {
-  display: none !important; /* 竖条太窄放不下统计，信息在悬停面板里看。
-    必须 !important：全局的 body.hovering .stats{display:flex} 优先级更高
-    （0,2,0 > 0,1,1），竖排悬停时会把统计区显示出来，把 marks 往下推、
-    环跑出竖条可见区域。 */
-}
-body.vertical .bar > .icon-btn {
-  display: none; /* 竖条放不下统计与常规按钮，交给托盘与热键 */
-}
-/*
- * 竖排悬停保留两个按钮：☰（展开详情）与 ⚙（设置）。
- * 其余（刷新/隐藏/退出）仍走托盘与热键。
- * 悬停时显示在环的下方，尺寸收小以适配 52px 条宽。
- */
-body.vertical.hovering #expandBtn,
-body.vertical.hovering #settingsBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  font-size: 12px;
-  margin-top: 2px;
-}
-
 /*
  * 竖排时面板贴在竖条右侧展开。
  *
@@ -707,12 +575,14 @@ body.vertical.hovering #settingsBtn {
  */
 body.vertical .panel {
   top: 8px;
-  bottom: 8px;
   left: 60px;
   right: 8px;
   width: auto;
   min-width: 420px; /* 保证内容放得下，不至于被压成一条 */
-  max-height: none;
+  /* 高度按卡片内容收缩（不再 bottom:8 撑满窗口）——2026-10-25 改版后卡片
+     内容变短，撑满整屏会留下大片空黑。上限为窗口高 - 上下边距，超出才滚动；
+     渲染层量 scrollHeight 后让主进程按内容高度开窗（见 wantExpand）。 */
+  max-height: calc(100% - 16px);
   padding: 10px 12px;
   border-radius: 14px;
   overflow-y: auto;
@@ -720,9 +590,6 @@ body.vertical .panel {
   overflow-x: hidden;
   transform: translateX(-6px);
   pointer-events: none;
-}
-body.vertical .panel .all-models {
-  grid-template-columns: 1fr;
 }
 /*
  * 面板打开时（窗口被拉到 664 高）：竖条的绝对居中已在基础规则里，
@@ -810,7 +677,7 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
 /* ---------- CC Switch 降级提示 ---------- */
 /*
  * 「今日花费」来自 CC Switch 本地账本，它升级时表结构可能变。
- * 探测失败时在模型列表上方显示这一行：用琥珀色（警示但不刺眼），
+ * 探测失败时在行式用量区底部显示这一行：用琥珀色（警示但不刺眼），
  * 并明确告诉用户这是外部数据源的问题、其余数据不受影响 ——
  * 避免用户以为 HUD 本身坏了。
  */
@@ -823,6 +690,27 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
   margin-left: 6px;
 }
 
+/* ---------- 卡片顶行：Tab 在左，⚙ / ✕ 固定右上角 ---------- */
+/*
+ * 设置入口从胶囊移到卡片右上角（2026-10-25 设计）——
+ * 胶囊上不再有任何按钮，悬停只剩环 + 金额。
+ */
+.panel-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 10px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
 /* ---------- 面板顶部工具 Tab ---------- */
 /*
  * 每个工具一个 Tab，切换后只看该工具自己的数据（不合并统计）。
@@ -831,11 +719,8 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
 .panel-tabs {
   display: flex;
   gap: 6px;
-  padding: 0 0 8px;
+  flex: 1 1 auto;
   flex-wrap: wrap;
-  /* 与其他区块的分隔线一致 */
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  margin-bottom: 8px;
 }
 
 .tab {
@@ -872,10 +757,29 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
   object-fit: contain;
 }
 
+/* ---------- 面板里的全部模型网格（概况行 / 模型用量条 / 会话 / 额度） ---------- */
+.all-models {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.mark.grid-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.mark.grid-item .mark-icon { grid-row: 1 / span 2; }
+.mark.grid-item .mark-label { min-width: 0; text-align: left; font-size: 11px; }
+
 /* ---------- 概况行 ---------- */
 /*
  * 「全部」Tab 与具体工具 Tab 共用的单行概览。
- * 比原来的卡片墙省空间，也避免与下方用量条重复。
  */
 .overview-row {
   display: flex;
@@ -900,11 +804,21 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
   color: #6fd6a8;
 }
 
-/* ---------- 用量条右侧的金额列 ---------- */
-/*
- * Codex Tab 专用：每个模型今天花了多少钱。
- * 用固定宽度 + 右对齐 + 等宽数字，纵向看起来整齐。
- */
+/* ---------- 模型用量条 ---------- */
+.bars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.bar-label {
+  width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-dim);
+}
+.bar-track {
+  display: block; flex: 1 1 auto; height: 6px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09); overflow: hidden;
+}
+.bar-fill { display: block; height: 100%; border-radius: 3px; }
+.bar-val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------- 用量条右侧的金额列（Codex Tab 专用：每个模型今天花的钱） ---------- */
 .bar-cost {
   flex: 0 0 62px;
   text-align: right;
@@ -912,3 +826,48 @@ body.vertical.panel-left .panel.open { transform: translateX(0); }
   font-variant-numeric: tabular-nums;
   color: rgba(140, 220, 180, 0.92);
 }
+
+/* ---------- 最近会话 ---------- */
+.sessions { display: flex; flex-direction: column; gap: 5px; }
+.sess-row {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.sess-row:last-child { border-bottom: none; }
+.sess-name { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-tag {
+  display: inline-block; min-width: 26px; margin-right: 5px;
+  padding: 0 4px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.13); color: var(--text);
+  font-size: 9px; font-weight: 700; text-align: center; vertical-align: 1px;
+}
+.sess-tok { font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+
+/* ---------- 额度区 ---------- */
+.quotas { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+.quota-row { display: flex; flex-direction: column; gap: 3px; }
+.quota-top { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.quota-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-calls { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: 10px; }
+.quota-credit { font-variant-numeric: tabular-nums; font-weight: 600; }
+.quota-credit.free { color: var(--ok); }
+.quota-credit.unknown { color: var(--text-dim); font-weight: 400; }
+.quota-track {
+  display: block; height: 4px; border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09); overflow: hidden;
+}
+.quota-fill { display: block; height: 100%; border-radius: 2px; }
+.quota-packs { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 2px; }
+.quota-pack {
+  font-size: 9px; color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px; padding: 1px 4px;
+}
+.quota-sep {
+  font-size: 9px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 8px 0 2px; padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.quota-hint { font-size: 11px; color: var(--text-dim); margin: 4px 0 10px; }

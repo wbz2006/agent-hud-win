@@ -9,46 +9,30 @@
 </head>
 <body>
   <!--
-    布局对齐原项目 SimpleMeterView.swift：
-      每个 agent 一个 cell = 圆环（该 agent 自身 level 色）+ 真实品牌 logo + 百分比数字。
-      简约形态**没有光晕**（原项目注释：a small floating panel with no glow behind it）。
-      底板：纯黑 0.82 + 1px 白色 0.14 描边，continuous 圆角。
+    胶囊只承载「环 + 金额」（2026-10-25 设计）：
+      收起态 = 纯环；悬停态 = 环 + 今日金额。
+      统计区与按钮组已移除 —— 左键点击胶囊展开详情卡片；
+      刷新 / 隐藏 / 退出走系统托盘菜单；设置入口在卡片右上角。
   -->
   <div id="bar" class="bar">
-    <!-- 每个 agent 一个 mark：圆环 + logo + 百分比 -->
+    <!-- 每个 agent 一个 mark：圆环 + logo + 金额（金额仅悬停时显示） -->
     <div class="marks" id="marks"></div>
-
-    <!-- 总览：24h token / 会话 / 调用 -->
-    <div class="stats">
-      <div class="stat">
-        <span class="stat-v" id="tokToday">--</span>
-        <span class="stat-k">24h token</span>
-      </div>
-      <div class="stat">
-        <span class="stat-v" id="sessCount">--</span>
-        <span class="stat-k">会话</span>
-      </div>
-      <div class="stat">
-        <span class="stat-v" id="callCount">--</span>
-        <span class="stat-k">调用</span>
-      </div>
-    </div>
-
-    <button class="icon-btn" id="expandBtn" title="展开详情面板">☰</button>
-    <button class="icon-btn" id="refreshBtn" title="刷新">⟳</button>
-    <button class="icon-btn" id="settingsBtn" title="设置">⚙</button>
-    <button class="icon-btn" id="hideBtn" title="隐藏（用热键或托盘唤回）">⊖</button>
-    <button class="icon-btn" id="quitBtn" title="退出">✕</button>
   </div>
 
-  <!-- 悬停展开的用量面板 -->
+  <!--
+    详情卡片（左键点胶囊展开 / ✕ 收起）。
+    内容 = 原版四段（2026-10-25 恢复）：概况行 / 模型用量条 / 最近会话 / 额度区；
+    视觉风格沿用改版：panel-top（Tab 在左 + ⚙/✕ 固定右上角）。
+    原「限流区」不恢复 —— Beta 限流监测功能已于 2026-10-25 整体删除。
+  -->
   <div class="panel" id="panel">
-    <!--
-      顶部：按工具切换的 Tab。
-      每个工具独立视图，不做"全部合并统计" —— 混在一起看不出是哪个 agent 在烧 token。
-      Tab 由 renderer.js 按 bySource 动态生成（哪个源有数据才显示哪个）。
-    -->
-    <div class="panel-tabs" id="panelTabs"></div>
+    <div class="panel-top">
+      <div class="panel-tabs" id="panelTabs"></div>
+      <div class="panel-actions">
+        <button class="icon-btn" id="settingsBtn" title="设置">⚙</button>
+        <button class="icon-btn" id="closeBtn" title="收起">✕</button>
+      </div>
+    </div>
 
     <!-- 当前 Tab 的概要行：源名 + 会话数 + 今日花费 -->
     <div class="panel-head">
@@ -56,18 +40,6 @@
       <span class="panel-time" id="allModelsNote"></span>
     </div>
     <div class="all-models" id="allModels"></div>
-
-    <!--
-      限流区：仅当「设置 → Beta 限流监控」启用时才显示。
-      未启用时整块隐藏（用户明确要求：没开 Beta 就不要显示这些内容）。
-    -->
-    <div id="rateSection" hidden>
-      <div class="panel-head">
-        <span>频率限制（按模型）</span>
-        <span class="panel-time" id="rateNote"></span>
-      </div>
-      <div class="rates" id="rates"></div>
-    </div>
 
     <div class="panel-head">
       <span>模型用量</span>
@@ -82,17 +54,13 @@
     <div class="sessions" id="sessions"></div>
 
     <!--
-      额度 —— 放在「最近会话」之后。
-      用户明确要求：积分余额、积分包明细、各 provider 的今日本地消耗
-      都属于"想细看才看"的次要信息，不该挤在首屏把模型用量和会话推下去。
-
+      额度 —— 放在「最近会话」之后（想细看才看的次要信息）。
       内容按当前 Tab 决定（见 renderer.js 的 renderQuotas 调用处）：
         · ALL / DSH Tab → WorkBuddy 积分（DSH 才有积分概念）
         · Codex Tab     → 中转站余额（Codex 走中转站时官方额度接口拿不到）
         · Codex Tab     → GPT 官方百分比（官方登录态的 5h/周窗口；走中转时
                           上游不下发该字段，整段不渲染，不编造百分比）
-      多段并存时标题显示为「额度」。右上角时间戳只在拿到数据时显示，
-      失败时不再写「离线」。
+      多段并存时标题显示为「额度」。右上角时间戳只在拿到数据时显示。
     -->
     <div id="quotaSection">
       <div class="panel-head">

@@ -15,70 +15,6 @@
  *   AgentHUDDesktop/Notch/Panel/HoverPanelView.swift
  */
 
-/** 毫秒转 "19h27m" 形式。 */
-function fmtDur(ms) {
-  if (ms === null || ms === undefined || ms < 0) return '';
-  const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h >= 24) return Math.floor(h / 24) + 'd' + (h % 24) + 'h';
-  if (h > 0) return h + 'h' + m + 'm';
-  return m + 'm';
-}
-
-/**
- * 免费模型的频率限制（soft_rate）状态 —— 按**模型**粒度。
- *
- * 上游对每个模型独立计配额，所以按 provider 聚合会漏掉细节：
- * 同一个 workbuddy 下，hy4-preview-f 可能已限流而 step-5-preview 仍可用。
- *
- * 显示的是**真实状态**：上游 429 报错里带着服务端给的准确重置时刻，
- * 据此算出倒计时。已完成重置的模型标为「已恢复」，与从未受限的区分开。
- *
- * 不做"剩余额度百分比"——配额模型无法从日志反推（实测同样 24h 窗口，
- * 一次 973 次才触发、一次 123 次就触发），编公式会给出错误数字。
- */
-/**
- * 按当前 Tab 过滤限流条目。
- *
- * 限流数据来自 DSH 的 provider 级日志，provider 名与三个数据源 key
- * 对不上（如 workbuddy / opencode2dsh 都属于 dsh）。所以过滤保留：
- *   - 'all' → 全部
- *   - 'dsh' → 全部（限流本来就是 dsh 内部的）
- *   - 其它源 → 空（该源没有限流数据来源）
- */
-function filterRatesBySource(rateLimits, source) {
-  const list = Array.isArray(rateLimits) ? rateLimits : [];
-  if (source === 'all' || source === 'dsh') return list;
-  return [];
-}
-
-/**
- * 模型名对不上时的模糊匹配。
- *
- * CC Switch 记的 model 名与 agent 会话里的可能差在大小写/后缀
- * （如 gpt-6.1-sol vs gpt-6.1-sol-2024）。退化匹配避免整列显示"—"。
- */
-function findCostModelFallback(costModels, name) {
-  const keys = Object.keys(costModels || {});
-  const base = String(name || '')
-    .toLowerCase()
-    .replace(/[-_ ]?\d{6,8}$/, ''); // 去掉结尾日期
-  const hit = keys.find((k) => {
-    const kk = k.toLowerCase().replace(/[-_ ]?\d{6,8}$/, '');
-    return kk === base || kk.startsWith(base) || base.startsWith(kk);
-  });
-  return hit ? costModels[hit] : null;
-}
-
-/** 金额格式化：小于 1 元显示两位小数，大于 1 元保留两位，够看就行。 */
-function fmtMoney(n) {
-  const v = Number(n) || 0;
-  if (v === 0) return '0.00';
-  if (v < 0.01) return v.toFixed(4);
-  return v.toFixed(2);
-}
-
 /**
  * 余额货币符号：账本 / 鲸鱼路由给的是 ISO 码（CNY、USD…），不是符号。
  *
@@ -101,59 +37,148 @@ function fmtCredit(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
-function renderRates(rateLimits) {
-  const el = $('rates');
-  const list = Array.isArray(rateLimits) ? rateLimits : [];
-  if (!list.length) {
-    el.innerHTML = '<div class="rate-hint">暂无频率限制记录</div>';
-    $('rateNote').textContent = '';
+/* ============================================================
+ * 卡片内容 = 原版四段（概况行 / 模型用量条 / 最近会话 / 额度区），
+ * 视觉风格沿用 2026-10-25 改版：panel-top（Tab + 右上角 ⚙/✕）、
+ * 深色卡片、金额亮色。Beta 限流区不恢复（功能已整体删除）。
+ * ============================================================ */
+
+const AGENT_COLORS = ['#c084fc', '#60a5fa', '#2dd4bf', '#fb923c', '#f472b6', '#a3e635'];
+
+/** 数据源 key → 短标签（用于会话列表的来源徽标）。 */
+function sourceLabel(key) {
+  const labels = { claude: 'CC', codex: 'CX', dsh: 'DSH' };
+  return labels[key] || String(key || '?').slice(0, 4).toUpperCase();
+}
+
+function modelShortName(m) {
+  return String(m).replace(/^<|>$/g, '');
+}
+
+/**
+ * 模型名对不上时的模糊匹配。
+ *
+ * CC Switch 记的 model 名与 agent 会话里的可能差在大小写/后缀
+ * （如 gpt-6.1-sol vs gpt-6.1-sol-2024）。退化匹配避免整列显示"—"。
+ */
+function findCostModelFallback(costModels, name) {
+  const keys = Object.keys(costModels || {});
+  const base = String(name || '')
+    .toLowerCase()
+    .replace(/[-_ ]?\d{6,8}$/, ''); // 去掉结尾日期
+  const hit = keys.find((k) => {
+    const kk = k.toLowerCase().replace(/[-_ ]?\d{6,8}$/, '');
+    return kk === base || kk.startsWith(base) || base.startsWith(kk);
+  });
+  return hit ? costModels[hit] : null;
+}
+
+function pickView(summary) {
+  if (activeSource === 'all') {
+    return {
+      label: '全部 Agent',
+      sub: `${Object.values(summary.bySource).filter((s) => s.ok).length} 个数据源`,
+      totals: summary.totals,
+      sessionCount: Object.values(summary.bySource).reduce((a, s) => a + (s.sessionCount || 0), 0),
+      byModel: summary.byModel,
+      sessions: summary.sessions,
+    };
+  }
+  const s = summary.bySource[activeSource];
+  if (!s) return null;
+  return {
+    label: s.label,
+    sub: s.error
+      ? '采集失败'
+      : sourceSubtitle(s),
+    totals: s.totals,
+    sessionCount: s.sessionCount || 0,
+    byModel: byModelOf(summary, activeSource),
+    sessions: summary.sessions.filter((x) => x.source === activeSource),
+    error: s.error,
+  };
+}
+
+/** 副标题：provider 列表可能很长（DSH 有 7 个），只展示前两个 + 计数。 */
+function sourceSubtitle(s) {
+  const ps = s.providers || [];
+  if (!ps.length) return '本地数据';
+  if (ps.length <= 2) return ps.join(' · ');
+  return `${ps.slice(0, 2).join(' · ')} +${ps.length - 2}`;
+}
+
+/** 单源视图下的模型分布：按会话的模型归属累加 token。 */
+function byModelOf(summary, sourceKey) {
+  const out = {};
+  for (const x of summary.sessions) {
+    if (x.source !== sourceKey) continue;
+    const m = x.model || 'unknown';
+    if (!out[m]) out[m] = { inputTokens: 0, outputTokens: 0, calls: 0, _tokens: 0 };
+    out[m].calls += x.calls || 0;
+    out[m]._tokens += x.tokens || 0;
+  }
+  return out;
+}
+
+function renderAllGrid(summary) {
+  const el = $('allModels');
+  if (!el) return;
+
+  const tc = summary.todayCost;
+  const byApp = (tc && tc.ok && tc.byApp) || {};
+  const costUnit = (tc && tc.ok && tc.unit) || '￥';
+
+  if (activeSource === 'all') {
+    // 全部 Tab：只给一行概览，不画卡片墙
+    const models = Object.keys(summary.byModel || {}).length;
+    const activeSrc = Object.values(summary.bySource || {}).filter((s) => s && s.ok).length;
+    el.innerHTML = `<div class="overview-row">
+      <span class="ov-item"><b>${activeSrc}</b> 个工具在采集</span>
+      <span class="ov-sep">·</span>
+      <span class="ov-item"><b>${models}</b> 个模型用过</span>
+    </div>`;
+
+    const note = $('allModelsNote');
+    if (note) {
+      if (tc && tc.ok === false) {
+        note.innerHTML =
+          `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
+          `<span class="cost-degrade-sub">（来自 CC Switch 账本，其余数据不受影响）</span></span>`;
+      } else if (tc && tc.ok) {
+        note.textContent = `今日 ${costUnit}${fmtMoney(tc.totalCny)}`;
+      } else {
+        note.textContent = '';
+      }
+    }
     return;
   }
 
-  const limitedCount = list.filter((r) => r.limited).length;
-  const shown = list.slice(0, 8);
+  // 具体工具 Tab：显示这个工具自己的三个数字
+  const src = (summary.bySource || {})[activeSource] || {};
+  const srcModels = Object.keys(byModelOf(summary, activeSource) || {}).length;
+  const appCost = byApp[activeSource];
 
-  el.innerHTML = shown
-    .map((r) => {
-      const limited = r.limited;
-      // 三种状态：正在限流 / 曾限流但已恢复 / 从未受限
-      const state = limited ? '已限流' : r.hitCount > 0 ? '已恢复' : '正常';
-      const stateCls = limited ? 'limited' : 'ok';
+  el.innerHTML = `<div class="overview-row">
+    <span class="ov-item"><b>${srcModels}</b> 个模型</span>
+    <span class="ov-sep">·</span>
+    <span class="ov-item"><b>${src.sessionCount || 0}</b> 个会话</span>
+    ${
+      appCost
+        ? `<span class="ov-sep">·</span><span class="ov-item ov-cost">今日 <b>${costUnit}${fmtMoney(appCost.cny)}</b></span>`
+        : ''
+    }
+  </div>`;
 
-      const meta = limited
-        ? `${fmtDur(r.resetInMs)} 后重置 · 窗口 ${r.windowCalls} 次`
-        : r.hitCount > 0
-          ? `窗口 ${r.windowCalls} 次 · 历史命中 ${r.hitCount}`
-          : `窗口 ${r.windowCalls} 次`;
-
-      // 条长：窗口内调用量相对该模型历史峰值没有基准，故仅表示绝对量级
-      const barPct = limited ? 100 : Math.max(2, Math.min(100, Math.round((r.windowCalls / 500) * 100)));
-      const barColor = limited ? 'var(--critical)' : r.hitCount > 0 ? COLOR.w : COLOR.ok;
-
-      return `<div class="rate-row${limited ? ' limited' : ''}">
-      <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:baseline;gap:6px">
-          <span class="rate-name" title="${esc(r.key)}">${esc(r.modelLabel)}</span>
-          <span class="rate-state ${stateCls}">${state}</span>
-        </div>
-        <div style="display:flex;align-items:baseline;gap:6px;margin-top:1px">
-          <span class="rate-provider">${esc(r.providerLabel)}</span>
-          ${r.viaVision ? '<span class="rate-provider" title="该模型也通过图片（vision）孪生路由使用过，与主路由共用同一配额">含图片</span>' : ''}
-          <span class="rate-meta">${meta}</span>
-        </div>
-        <span class="rate-bar"><span class="rate-bar-fill" style="width:${barPct}%;background:${barColor}"></span></span>
-      </div>
-    </div>`;
-    })
-    .join('');
-
-  // 汇总文案同样按占比分级，与悬浮条圆环口径一致
-  if (!limitedCount) {
-    $('rateNote').textContent = '全部正常';
-  } else {
-    const ratio = limitedCount / list.length;
-    const tag = ratio >= 1 ? '全部不可用' : ratio >= 0.8 ? '大面积受限' : '部分受限';
-    $('rateNote').textContent = `${limitedCount}/${list.length} ${tag}`;
+  const note = $('allModelsNote');
+  if (note) {
+    // 降级提示只在有花费概念（codex）时才有意义
+    if (activeSource === 'codex' && tc && tc.ok === false) {
+      note.innerHTML =
+        `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
+        `<span class="cost-degrade-sub">（来自 CC Switch 账本）</span></span>`;
+    } else {
+      note.textContent = '';
+    }
   }
 }
 
@@ -334,9 +359,6 @@ function renderQuotas(summary, opts = {}) {
   el.innerHTML = parts.join('') || '<div class="quota-hint">暂无数据</div>';
   /*
    * 右上角时间戳 —— 失败时显示「离线」这一状态**已按用户要求删除**。
-   * 原因：DSH 额度路由不可达时，这一行会显示「离线」，而下面每行已经
-   * 单独写了不可达原因，两者重复；更糟的是它把一个「部分数据源异常」
-   * 渲染成整个额度区「离线」，误导性大于信息量。
    * 现在只有拿到数据才写采集时间，拿不到就留空。
    */
   $('quotaNote').textContent =
@@ -352,8 +374,6 @@ function fmtMoney(n) {
   return v.toFixed(2);
 }
 
-const AGENT_COLORS = ['#c084fc', '#60a5fa', '#2dd4bf', '#fb923c', '#f472b6', '#a3e635'];
-
 /**
  * 状态色，取值与原项目 StatusPalette.swift 一致：
  *   ok #3ddc84 · warning #ffd23f · critical #ff453a · idle #9a9aa0
@@ -366,12 +386,6 @@ const COLOR = {
 };
 
 const $ = (id) => document.getElementById(id);
-
-/** 数据源 key → 短标签（用于会话列表的来源徽标）。 */
-function sourceLabel(key) {
-  const labels = { claude: 'CC', codex: 'CX', dsh: 'DSH' };
-  return labels[key] || String(key || '?').slice(0, 4).toUpperCase();
-}
 
 /** token 数格式化，对齐原项目 Formatting/TokenFormat.swift 的紧凑风格。 */
 function fmtTokens(n) {
@@ -418,10 +432,6 @@ function quotaRatio(credits) {
 /** 转义，避免上游返回的包名破坏结构。 */
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-}
-
-function modelShortName(m) {
-  return String(m).replace(/^<|>$/g, '');
 }
 
 /** 额度色段：<70% 绿 · >=70% 黄 · >=90% 红（原项目 README 明示的阈值）。 */
@@ -494,53 +504,6 @@ function renderTabs(summary) {
       if (currentSummary) render(currentSummary);
     });
   });
-}
-
-function pickView(summary) {
-  if (activeSource === 'all') {
-    return {
-      label: '全部 Agent',
-      sub: `${Object.values(summary.bySource).filter((s) => s.ok).length} 个数据源`,
-      totals: summary.totals,
-      sessionCount: Object.values(summary.bySource).reduce((a, s) => a + (s.sessionCount || 0), 0),
-      byModel: summary.byModel,
-      sessions: summary.sessions,
-    };
-  }
-  const s = summary.bySource[activeSource];
-  if (!s) return null;
-  return {
-    label: s.label,
-    sub: s.error
-      ? '采集失败'
-      : sourceSubtitle(s),
-    totals: s.totals,
-    sessionCount: s.sessionCount || 0,
-    byModel: byModelOf(summary, activeSource),
-    sessions: summary.sessions.filter((x) => x.source === activeSource),
-    error: s.error,
-  };
-}
-
-/** 副标题：provider 列表可能很长（DSH 有 7 个），只展示前两个 + 计数。 */
-function sourceSubtitle(s) {
-  const ps = s.providers || [];
-  if (!ps.length) return '本地数据';
-  if (ps.length <= 2) return ps.join(' · ');
-  return `${ps.slice(0, 2).join(' · ')} +${ps.length - 2}`;
-}
-
-/** 单源视图下的模型分布：按会话的模型归属累加 token。 */
-function byModelOf(summary, sourceKey) {
-  const out = {};
-  for (const x of summary.sessions) {
-    if (x.source !== sourceKey) continue;
-    const m = x.model || 'unknown';
-    if (!out[m]) out[m] = { inputTokens: 0, outputTokens: 0, calls: 0, _tokens: 0 };
-    out[m].calls += x.calls || 0;
-    out[m]._tokens += x.tokens || 0;
-  }
-  return out;
 }
 
 /**
@@ -626,22 +589,13 @@ let marksExpanded = false;
  */
 let DAILY_BUDGET_CNY = 8;
 
-/**
- * 缓存一份配置（决定面板显示哪些区块）。
- *
- * 目前用到的地方：Beta 限流监控是否开启 —— 没开就整块隐藏限流区。
- * 每次配置变更（设置页保存）都会刷新并重绘，无需重启。
- */
-let appConfig = null;
-
-/** 从主进程拉配置，更新预算分母与区块开关（启动时调用一次）。 */
+/** 从主进程拉配置，更新预算分母（启动时调用一次）。 */
 async function loadBudget() {
   try {
     const cfg = await window.hud.getConfig();
-    appConfig = cfg || null;
     const n = Number(cfg && cfg.dailyBudgetCny);
     if (Number.isFinite(n) && n > 0) DAILY_BUDGET_CNY = n;
-    // 配置拿到后立刻重绘一次，让限流区/额度区按开关决定显隐
+    // 配置拿到后立刻重绘一次，让环弧与行式用量按新预算计算
     if (currentSummary) render(currentSummary);
   } catch (_) {
     /* 拉不到就用默认值 */
@@ -668,11 +622,10 @@ function markHtml(r, opts) {
     ? `<img class="mark-logo" src="assets/${logo}" alt="${esc(vendor)}"${tint} />`
     : `<span class="mark-badge">${vendorInitial(vendor)}</span>`;
 
-  // ---- 颜色：只看该分组的实时状态（限流红 / 可用绿 / 无数据灰）----
-  const limited = r.limited;
-  const liveLevel = limited ? 'crit' : r.hitCount > 0 ? 'ok' : 'idle';
-  const color = liveLevel === 'crit' ? COLOR.c : liveLevel === 'ok' ? COLOR.ok : COLOR.idle;
-  const state = limited ? '已限流' : liveLevel === 'ok' ? '可用' : '无调用';
+  // ---- 颜色：只看该分组的实时状态（可用绿 / 无数据灰）----
+  const liveLevel = r.hitCount > 0 ? 'ok' : 'idle';
+  const color = liveLevel === 'ok' ? COLOR.ok : COLOR.idle;
+  const state = liveLevel === 'ok' ? '可用' : '无调用';
 
   // ---- 进度弧填充比例 ----
   // 用人民币口径：花费(CNY)/预算(CNY)。与显示的金额同一单位，弧长才对得上。
@@ -681,7 +634,7 @@ function markHtml(r, opts) {
   if (DAILY_BUDGET_CNY > 0 && todayCny != null && todayCny >= 0) {
     usedPct = Math.max(0, Math.min(1, todayCny / DAILY_BUDGET_CNY));
   } else {
-    usedPct = limited ? 1 : 0;
+    usedPct = 0;
   }
   /*
    * 弧长必须如实反映花费，不能为了"看得见"而放大。
@@ -700,7 +653,7 @@ function markHtml(r, opts) {
 
   const tip = compact
     ? ''
-    : `<span class="grid-meta">${esc(r.providerLabel || vendor)} · ${state} · 24h ${r.windowCalls || 0} 次${
+    : `<span class="grid-meta">${esc(r.providerLabel || vendor)} · ${state}${
         todayCny != null
           ? ` · 今日 ￥${todayCny.toFixed(2)}`
           : r.spendTip
@@ -810,7 +763,6 @@ const SOURCE_VENDOR = {
 };
 
 function sourceMeterItems(summary) {
-  const rl = summary.rateLimits || [];
   const bySrc = summary.bySource || {};
   // 今日花费按 app_type 分组：{ claude: {usd,requests}, codex: {...}, ... }
   const byApp = (summary.todayCost && summary.todayCost.ok && summary.todayCost.byApp) || {};
@@ -821,24 +773,12 @@ function sourceMeterItems(summary) {
     const src = bySrc[key];
     if (!src || src.error) continue;
 
-    // 该源下的模型级限流条目（DSH 系能对上；claude/codex 通常为空）
-    const mine = rl.filter((r) => (r.provider || '') === key || (r.provider || '').startsWith(key + '-'));
-    const limited = mine.some((r) => r.limited);
-    const calls = mine.reduce((a, r) => a + (r.windowCalls || 0), 0);
-
     /*
-     * 「可用」的判定不能用限流命中数。
-     *
-     * 之前写 hitCount = anyHit ? 1 : 0，而 anyHit 来自 rateLimits 里能匹配到的模型；
-     * Claude / Codex 的 provider 在 rateLimits 里根本不存在（Codex 走中转站、
-     * Claude 走官方账号，都不进 DSH 的限流日志），于是 anyHit 恒为 0，
-     * 三个环一律被算成 idle 灰色 —— 这就是"颜色显示不出来"的真因。
-     *
-     * 数据源的真实信号是：有会话、有 token 记录，就说明这个 agent 在用、可用。
-     * 只有该源下确实有模型限流时才标红。
+     * 「可用」= 该源有会话或调用记录（有数据就说明这个 agent 在用）。
+     * Beta 限流监控已删除（2026-10-25），环色只剩可用绿 / 无调用灰两态。
      */
     const hasData = (src.sessionCount || 0) > 0 || (src.totals && (src.totals.calls || 0) > 0);
-    const usable = hasData && !limited;
+    const usable = hasData;
 
     // 这一源今日花了多少（CC Switch 的 app_type 与我们的 key 同名：claude/codex）
     const appCost = byApp[key];
@@ -912,10 +852,8 @@ function sourceMeterItems(summary) {
       vendor: meta.vendor,
       label: meta.label,
       logo: meta.logo,
-      limited,
-      // 传 1 表示"有可用读数"，让 markHtml 的颜色判定给出绿/红而不是灰
+      // 传 1 表示"有可用读数"，让 markHtml 的颜色判定给出绿而不是灰
       hitCount: usable ? 1 : 0,
-      windowCalls: calls,
       sessionCount: src.sessionCount || 0,
       todayUsd,
       todayCny,
@@ -1044,87 +982,12 @@ function measureBarNeed() {
   }
 }
 
-/**
- * 悬停面板里的完整模型网格：全部 provider 都列出，
- * 补上悬浮条折叠掉的那部分（用户要看全时在这里看）。
- */
-/**
- * 面板首屏的"概况"区。
- *
- * 语义按当前 Tab 变化：
- *   - 「全部」Tab：给一句全局概览（多少模型、多少在跑），不堆细节
- *   - 具体工具 Tab：给该工具自己的统计（模型数 / 24h 用过几个 / 今日花费）
- *
- * 以前这里是一整面"全部模型"卡片墙，既占地方又和下面的用量条重复。
- */
-function renderAllGrid(summary) {
-  const el = $('allModels');
-  if (!el) return;
-
-  const tc = summary.todayCost;
-  const byApp = (tc && tc.ok && tc.byApp) || {};
-  const costUnit = (tc && tc.ok && tc.unit) || '￥';
-
-  if (activeSource === 'all') {
-    // 全部 Tab：只给一行概览，不画卡片墙
-    const models = Object.keys(summary.byModel || {}).length;
-    const activeSrc = Object.values(summary.bySource || {}).filter((s) => s && s.ok).length;
-    el.innerHTML = `<div class="overview-row">
-      <span class="ov-item"><b>${activeSrc}</b> 个工具在采集</span>
-      <span class="ov-sep">·</span>
-      <span class="ov-item"><b>${models}</b> 个模型用过</span>
-    </div>`;
-
-    const note = $('allModelsNote');
-    if (note) {
-      if (tc && tc.ok === false) {
-        note.innerHTML =
-          `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
-          `<span class="cost-degrade-sub">（来自 CC Switch 账本，其余数据不受影响）</span></span>`;
-      } else if (tc && tc.ok) {
-        note.textContent = `今日 ${costUnit}${fmtMoney(tc.totalCny)}`;
-      } else {
-        note.textContent = '';
-      }
-    }
-    return;
-  }
-
-  // 具体工具 Tab：显示这个工具自己的三个数字
-  const src = (summary.bySource || {})[activeSource] || {};
-  const srcModels = Object.keys(byModelOf(summary, activeSource) || {}).length;
-  const appCost = byApp[activeSource];
-
-  el.innerHTML = `<div class="overview-row">
-    <span class="ov-item"><b>${srcModels}</b> 个模型</span>
-    <span class="ov-sep">·</span>
-    <span class="ov-item"><b>${src.sessionCount || 0}</b> 个会话</span>
-    ${
-      appCost
-        ? `<span class="ov-sep">·</span><span class="ov-item ov-cost">今日 <b>${costUnit}${fmtMoney(appCost.cny)}</b></span>`
-        : ''
-    }
-  </div>`;
-
-  const note = $('allModelsNote');
-  if (note) {
-    // 降级提示只在有花费概念（codex）时才有意义
-    if (activeSource === 'codex' && tc && tc.ok === false) {
-      note.innerHTML =
-        `<span class="cost-degrade">今日花费不可用：${esc(tc.reason || '未知原因')}` +
-        `<span class="cost-degrade-sub">（来自 CC Switch 账本）</span></span>`;
-    } else {
-      note.textContent = '';
-    }
-  }
-}
-
 function render(summary) {
   currentSummary = summary;
   // 采集成功：清零失败计数，避免旧的瞬时失败提示再次冒出来
   softFailStreak = 0;
 
-  // 简约形态：每个 agent 一个 mark（圆环 + logo + 百分比），无总览圆环、无光晕
+  // 简约形态：每个 agent 一个 mark（圆环 + logo + 金额），无总览圆环、无光晕
   renderMarks(summary);
   // 顶部工具 Tab（数据到了才渲染，避免闪一下空 Tab）
   renderTabs(summary);
@@ -1134,39 +997,8 @@ function render(summary) {
   const view = pickView(summary);
   if (!view) return;
 
-  const t = view.totals || {};
-  const total = (t.inputTokens || 0) + (t.outputTokens || 0);
-  const bucketArr =
-    activeSource === 'all'
-      ? summary.buckets
-      : (summary.bucketsBySource && summary.bucketsBySource[activeSource]) || [];
-  const recent = bucketArr.reduce((a, b) => a + b, 0);
-
-  // 右侧总览统计
-  $('tokToday').textContent = fmtTokens(recent || total);
-  $('sessCount').textContent = String(view.sessionCount);
-  $('callCount').textContent = fmtTokens(t.calls || 0);
-
   $('panelTime').textContent = new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false });
   $('filterNote').textContent = activeSource === 'all' ? '' : view.label;
-
-  /*
-   * 限流区：只有「设置 → Beta 限流监控」开启时才显示。
-   *
-   * 用户明确要求：没开 Beta 就完全不要出现这块内容（原标题"免费模型频率限制"、
-   * "暂无频率限制记录"这些都不该占地方）。判定用 betaRateFreeModel 或
-   * rateEnabled 任一为真 —— 后者是总开关，前者是免费模型子开关，
-   * 总开关开着时即便只监控付费模型也该显示这一区。
-   */
-  const rateOn = !!(appConfig && (appConfig.rateEnabled || appConfig.betaRateFreeModel));
-  const rateSection = $('rateSection');
-  if (rateSection) rateSection.hidden = !rateOn;
-  if (rateOn) {
-    renderRates(filterRatesBySource(summary.rateLimits, activeSource));
-  } else {
-    $('rates').innerHTML = '';
-    $('rateNote').textContent = '';
-  }
 
   /*
    * 额度区：按工具分三部分，谁的数据谁显示。
@@ -1176,12 +1008,6 @@ function render(summary) {
    *    改用中转站自己的余额接口（relay.js）
    *  - GPT 官方百分比（Codex 源）：官方登录态的 5h/周窗口，数据在本地
    *    rollout 里（codex-source.js 解析）；走中转站时无值，不显示。
-   *
-   * 为什么之前「Codex 的额度区显示成 WorkBuddy」：
-   * 原先是 showQuota = (activeSource === 'all' || activeSource === 'dsh')，
-   * 即「只有 DSH 才显示额度区」；而 relayBalance 虽然早就由 worker 算好了，
-   * renderer 从来没读它。于是 Codex Tab 上额度区被藏起来，用户看到的
-   * WorkBuddy 行其实来自 all/DSH 视角 —— 数据算出却不显示，等于没有。
    */
   const quotaSection = $('quotaSection');
   const showCredits = activeSource === 'all' || activeSource === 'dsh';
@@ -1320,10 +1146,11 @@ function showError(msg) {
   setTimeout(() => el.remove(), 6000);
 }
 
-$('refreshBtn').addEventListener('click', () => window.hud.refresh());
+/*
+ * 胶囊上不再有任何按钮（2026-10-25 设计：悬停只显示环 + 金额）。
+ * 刷新 / 隐藏 / 退出走系统托盘菜单与全局热键；设置入口在卡片右上角（⚙）。
+ */
 $('settingsBtn').addEventListener('click', () => window.hud.openSettings());
-$('hideBtn').addEventListener('click', () => window.hud.toggle());
-$('quitBtn').addEventListener('click', () => window.hud.quit());
 
 // 悬停展开 / 收回。窗口高度必须同步调整，否则面板会被窗口裁掉。
 const bar = $('bar');
@@ -1392,12 +1219,11 @@ let drag = null;
  * 悬停：只让胶囊"活起来"——露出统计与按钮（并让环靠左让位）。
  * 不再自动展开面板，避免鼠标扫过就弹出一大块内容（用户明确要求）。
  */
-/** 竖排时悬停要加高窗口给 ☰ 按钮腾位置。
- *  内容实测：marks(三环+金额) 149 + 按钮 26 + gap 8 = 183，
- *  加 bar 上下 padding 16 + 边框 2 = 201。
- *  取 245：除了装下内容，上下还各留约 22px 呼吸空间 ——
- *  用户反馈 212 时"还是非常极限"（内容几乎贴竖条上下缘）。 */
-const VERTICAL_HOVER_H = 245;
+/** 竖排时悬停要加高窗口的高度。
+ *  悬停内容只有「三环 + 金额」（按钮组已移除）：每个 mark 约 43px
+ *  （环 30 + 金额 10 + 间距 3），3 个 = 129 + 环间 gap 20 + bar 上下
+ *  padding 16 + 边框 2 ≈ 167。取 190 留呼吸空间。 */
+const VERTICAL_HOVER_H = 190;
 /** 竖条的厚度（与 CSS 的 --side-thickness / 主进程 SIDE_THICKNESS 一致）。 */
 const SIDE_THICKNESS = 52;
 
@@ -1461,7 +1287,13 @@ function wantExpand(next) {
       window.screen && window.screen.availHeight ? window.screen.availHeight / dpr : 680;
 
     if (verticalLayout) {
-      const panelH = Math.max(240, screenHDip - 16);
+      /*
+       * 窗口高度按卡片内容收缩（2026-10-25 改版后卡片只有几行 + 图表，
+       * 不再撑满整屏留大片空黑）。上限为工作区高度，内容超出才滚动。
+       * +16 = 面板上下各 8px 边距（与 CSS 的 top:8 / max-height 配对）。
+       */
+      const maxH = Math.max(240, screenHDip - 16);
+      const panelH = Math.min(maxH, Math.ceil(panel.scrollHeight) + 16);
       window.hud.expand(true, panel.scrollWidth + SIDE_PAD, panelH);
     } else {
       const barH = bar.getBoundingClientRect().height;
@@ -1494,8 +1326,8 @@ function wantExpand(next) {
  * 胶囊和面板都在同一个矩形内，滑过去不会中断。
  */
 /*
- * 悬停只切换"悬停态"（露出统计与按钮），不再自动展开面板。
- * 面板的展开/收起改由 ☰ 按钮点击控制（见下方 expandBtn）。
+ * 悬停只切换"悬停态"（露出金额），不再自动展开卡片。
+ * 卡片的展开/收起由**左键点击胶囊**控制（见下方 bar click）。
  *
  * mouseleave 必须保留：主进程轮询的 `hovering` 标志初始为 false，
  * 光标从未进入过时它永远不发 hover:false（代码里 `if (!hovering) return`），
@@ -1508,15 +1340,25 @@ panel.addEventListener('mouseenter', () => setHovering(true));
 bar.addEventListener('mouseleave', () => setHovering(false));
 panel.addEventListener('mouseleave', () => setHovering(false));
 
-const expandBtn = $('expandBtn');
-if (expandBtn) {
-  expandBtn.addEventListener('click', (e) => {
+/*
+ * 卡片的开关入口在**胶囊本身**：左键点击展开 / 再点收起。
+ *
+ * 拖动已改为右键按住（2026-10-25），左键整个腾了出来；胶囊上的按钮组
+ * （☰ ⟳ ⚙ ⊖ ✕）也已移除，左键单击不会再与任何按钮冲突。
+ * 收起按钮（✕）固定在卡片右上角，与 ⚙ 并排。
+ * 拖动中（drag 非空）忽略 click —— 拖动期间任何左键点击都不得把卡片拽出来。
+ */
+const closeBtn = $('closeBtn');
+if (closeBtn) {
+  closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    wantExpand(!panelOpen);
-    expandBtn.textContent = panelOpen ? '✕' : '☰';
-    expandBtn.title = panelOpen ? '收起详情面板' : '展开详情面板';
+    wantExpand(false);
   });
 }
+bar.addEventListener('click', () => {
+  if (drag) return;
+  wantExpand(!panelOpen);
+});
 
 /* ============================================================
  * 拖动胶囊改变位置（**右键**按住 → 虚线边框 → 跟手移动 → 松手落盘）
@@ -1543,10 +1385,6 @@ function collapseForDrag() {
   document.body.classList.remove('panel-open');
   document.body.classList.remove('hovering');
   panelOpen = false;
-  if (expandBtn) {
-    expandBtn.textContent = '☰';
-    expandBtn.title = '展开详情面板';
-  }
   /*
    * 这里不再重测宽度：收起态宽度由主进程的 collapsedWidth 记着
    * （每次非悬停测量更新），拿起时它直接按那个宽度收窗口。
@@ -1573,7 +1411,8 @@ function armDrag() {
   collapseForDrag();
   document.body.classList.add('dragging');
   if (window.hud && window.hud.dragStart) {
-    window.hud.dragStart().catch(() => {});
+    // 带上当前光标绝对位置：主进程记录抓取偏移，此后逐帧"窗口 = 光标 - 偏移"
+    window.hud.dragStart(drag.lx, drag.ly).catch(() => {});
   }
 }
 
@@ -1586,7 +1425,7 @@ function dragMoveFrame() {
   drag.dy = 0;
   drag.raf = 0;
   if (!drag.armed || (!dx && !dy)) return;
-  if (window.hud && window.hud.dragMove) window.hud.dragMove(dx, dy);
+  if (window.hud && window.hud.dragMove) window.hud.dragMove(dx, dy, drag.lx, drag.ly);
 }
 
 function onBarPointerDown(e) {
