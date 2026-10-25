@@ -248,6 +248,29 @@ function applyDock() {
 }
 
 /**
+ * 把横排窗口强制收回收起态宽度（自愈）。
+ *
+ * 为什么需要：悬停加宽是"渲染层量到加宽值 → hud:measure → 主进程改窗口"这条
+ * 异步链，而 hud:measure 有三道门禁（竖排 / 拖动中 / 展开态）。只要悬停结束的
+ * 那一次测量被任何一道吃掉，窗口就永久停在加宽值上——用户看到的就是
+ * 「胶囊变成一条宽 bar，里面只剩三个圆环」。
+ *
+ * 所以悬停结束与拖动落地这两处**不再等渲染层回报**，直接用主进程自己的
+ * collapsedWidth（最近一次非悬停测量）落位；渲染层随后报同一个值是无害的。
+ * 竖排不动：竖条尺寸固定，且悬停加高是另一套（setExpanded hoverGrow）。
+ */
+function enforceCollapsedWidth() {
+  if (!win || win.isDestroyed() || dragging || expanded) return;
+  const layout = layoutOf();
+  if (layout.vertical) return;
+  const w = clampWidth(collapsedWidth);
+  const bw = win.getBounds().width;
+  if (Math.abs(w - contentWidth) <= 1 && Math.abs(w - bw) <= 1) return;
+  contentWidth = w;
+  applyDock();
+}
+
+/**
  * 切换展开态。
  *
  * 横排：向下加高窗口（面板在下方）。
@@ -271,6 +294,18 @@ function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
   if (dragging) return;
   const dock = layout.dock;
   const vertical = layout.vertical;
+  /*
+   * hoverGrow（悬停加高）只对竖条有意义，横排一律忽略。
+   *
+   * 为什么要挡：渲染层的朝向标记（body.vertical / verticalLayout）是主进程
+   * 异步推过去的，拖动刚从竖条翻成横条那零点几秒里它可能还停在"竖排"，
+   * 于是悬停会发来一次"竖排悬停展开"。横排分支把它当成完整展开：
+   *   w = max(contentWidth, PANEL_MIN_WIDTH) → 窗口撑成一条宽 bar，
+   *   而面板根本没开（里面只有三个圆环），并且 expanded 被永久留在 true ——
+   *   此后 hud:measure 的 `if (!expanded) applyDock()` 再也收不回来。
+   * 横排的悬停宽度本来就该由 measureBar 驱动，这条路径不需要 setExpanded。
+   */
+  if (hoverGrow && !vertical) return;
   if (expanded === next && !wantedSize) return;
   expanded = next;
 
@@ -311,14 +346,11 @@ function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
       return;
     }
 
-    // 收起
-    const d2 = screen.getPrimaryDisplay().workArea;
-    win.setBounds({
-      x: dock === 'right' ? b.x + b.width - SIDE_THICKNESS : b.x,
-      y: Math.round(d2.y + (d2.height - SIDE_RUN) / 2),
-      width: SIDE_THICKNESS,
-      height: SIDE_RUN,
-    });
+    // 收起：回到停靠矩形（含沿边落点 dockPos）。之前硬编码"竖直居中"，
+    // 左/右停靠的竖条只要悬停一次，移开鼠标就弹回边中间 —— 用户拖的
+    // 落点（dockPos[dock]）被丢掉。dockRect 与 applyDock 同一几何，
+    // 没记过落点的边仍是居中。
+    win.setBounds(dockRect(dock, screen.getPrimaryDisplay().workArea, contentWidth));
     return;
   }
 
@@ -430,6 +462,8 @@ function startHoverWatch() {
       if (win.webContents && !win.webContents.isDestroyed()) {
         win.webContents.send('hud:hover', false);
       }
+      // 悬停结束就自己收窄（不等渲染层的测量，见 enforceCollapsedWidth 注释）
+      enforceCollapsedWidth();
     }, RECOLLAPSE_MS);
   }, 120);
 }
@@ -1055,6 +1089,13 @@ ipcMain.handle('hud:drag-end', (_e, commit) => {
   dragging = false;
   morphShift = null;
   dragSize = null;
+  /*
+   * 落地宽度取 collapsedWidth（最近一次非悬停测量），与 drag-start 对称：
+   * 拖动期间窗口是钉死的，任何残留的加宽值都不该影响"落到哪条边、多宽"。
+   * 少了这一步，从竖条翻到顶部时窗口可能按拖动前的悬停加宽值落地
+   * （用户反馈：「胶囊态变成一条宽 bar，但只有三个圆环」）。
+   */
+  contentWidth = clampWidth(collapsedWidth);
   const b = win.getBounds();
   const dock = dragZone || dragGeo.zoneOf(b, screen.getDisplayMatching(b).workArea);
   dragZone = null;

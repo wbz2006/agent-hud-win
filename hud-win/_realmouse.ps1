@@ -102,4 +102,73 @@ if ($Phase -eq 'left') {
   Write-Output ("L release  {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
 }
 
+# toLeft/toTop: replay the user's gesture (drag between docks) for the stress
+# harness _toTopCheck.js. Right button hold, walk to the target, release, park.
+if ($Phase -eq 'toLeft') {
+  $cx = [int]($rc.x + $rc.w / 2)
+  $cy = [int]($rc.y + $rc.h / 2)
+  $tx = 24
+  $ty = [int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height * 0.45)
+  $null = [RM]::SetCursorPos($cx, $cy)
+  Start-Sleep -Milliseconds 420
+  $null = [RM]::mouse_event($RIGHTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 120
+  for ($i = 1; $i -le 10; $i++) {
+    $nx = [int]($cx + ($tx - $cx) * $i / 10)
+    $ny = [int]($cy + ($ty - $cy) * $i / 10)
+    $null = [RM]::SetCursorPos($nx, $ny)
+    Start-Sleep -Milliseconds 130
+    $s = Get-Rect $hud
+    Write-Output ("TL step{0}  {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
+  }
+  $null = [RM]::mouse_event($RIGHTUP, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 500
+  $s = Get-Rect $hud
+  Write-Output ("TL release {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
+}
+
+if ($Phase -eq 'toTop') {
+  $cx = [int]($rc.x + $rc.w / 2)
+  $cy = [int]($rc.y + $rc.h / 2)
+  $tx = [int]([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width * 0.62)
+  $ty = 32
+  $null = [RM]::SetCursorPos($cx, $cy)
+  Start-Sleep -Milliseconds 420
+  $null = [RM]::mouse_event($RIGHTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 120
+  for ($i = 1; $i -le 10; $i++) {
+    $nx = [int]($cx + ($tx - $cx) * $i / 10)
+    $ny = [int]($cy + ($ty - $cy) * $i / 10)
+    $null = [RM]::SetCursorPos($nx, $ny)
+    Start-Sleep -Milliseconds 130
+    $s = Get-Rect $hud
+    Write-Output ("TT step{0}  {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
+  }
+  $null = [RM]::mouse_event($RIGHTUP, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 500
+  $s = Get-Rect $hud
+  Write-Output ("TT release {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
+}
+
+# hover: move the real cursor onto the capsule (hover-in), then park it far
+# below (hover-out), sampling the window rect. Reproduces what the user does
+# right after a drop.
+if ($Phase -eq 'hover') {
+  $cx = [int]($rc.x + $rc.w / 2)
+  $cy = [int]($rc.y + $rc.h / 2)
+  $null = [RM]::SetCursorPos($cx, $cy)
+  for ($i = 1; $i -le 5; $i++) {
+    Start-Sleep -Milliseconds 300
+    $s = Get-Rect $hud
+    Write-Output ("HV in{0}   {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
+  }
+  $scr = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $null = [RM]::SetCursorPos([int]($scr.Width / 2), [int]($scr.Height - 60))
+  for ($i = 1; $i -le 5; $i++) {
+    Start-Sleep -Milliseconds 300
+    $s = Get-Rect $hud
+    Write-Output ("HV out{0}  {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
+  }
+}
+
 Write-Output 'DONE'

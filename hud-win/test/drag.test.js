@@ -225,7 +225,8 @@ test('拿起过就必须结束拖动，只有真拖过才写盘', () => {
   // 否则主进程 dragging 常驻 true，悬停轮询与 hud:measure 永久被挡
   assert.match(PRELOAD, /dragEnd:\s*\(commit\)\s*=>\s*ipcRenderer\.invoke\('hud:drag-end',\s*commit === true\)/);
   assert.match(RENDERER_CODE, /if \(armed && window\.hud && window\.hud\.dragEnd\)/);
-  assert.match(RENDERER_CODE, /window\.hud\.dragEnd\(moved\)/);
+  // 重测挂在 dragEnd 的 then 上（链式写法），不能再直接调 measureBar
+  assert.match(RENDERER_CODE, /\.dragEnd\(moved\)/);
   const fn = MAIN_CODE.slice(MAIN_CODE.indexOf("ipcMain.handle('hud:drag-end'"));
   // 截到下一个顶层语句（早退分支里也有 }\n，不能按它切）
   const end = Math.min(

@@ -1674,10 +1674,23 @@ function endDrag(e) {
   // 但拿起过就**必须**通知主进程结束拖动（commit=false 不写盘）——
   // 否则主进程的 dragging 永远是 true，悬停与窗口自适应从此失效（实测）。
   if (armed && window.hud && window.hud.dragEnd) {
-    window.hud.dragEnd(moved).catch(() => {});
+    window.hud
+      .dragEnd(moved)
+      .catch(() => {})
+      .then(() => measureBar());
   }
-  // 松手后重新量一次宽度：拖动期间禁了测量，朝向也可能已经翻转
-  measureBar();
+  /*
+   * 松手后要重新量宽度（拖动期间禁了测量，朝向也可能刚翻转），但**必须等
+   * dragEnd 的回复到达之后再量**：主进程的 hud:measure 有 `if (dragging)
+   * return contentWidth` 门禁，而 dragEnd 与 measure 是两条并发 IPC——
+   * measure 抢在前面的那一次会被静默丢弃、不会补投。正常时下一次鼠标进出
+   * 会重测所以看不出来，可用户松手后把鼠标停在胶囊外就没有任何重测了，
+   * 宽度永久停在翻转瞬间的值上（实测症状：拖完变成一条空宽 bar，只有三个环）。
+   * 下面这条延时补测兜住"没拿起"与 IPC 异常两种情况。
+   */
+  setTimeout(() => {
+    if (!drag) measureBar();
+  }, 320);
 }
 
 bar.addEventListener('pointerdown', onBarPointerDown);
