@@ -25,10 +25,10 @@
         4  采集          —— 调过一轮就不再动
         5  监控数据源     —— 开关某个 agent，偶尔会动
         6  金额计价       —— 需要理解 CC Switch 的折算逻辑才会去改
-        7  Beta 限流监控  —— 实验性功能，默认关闭，放最后
 
-      早期版本把「金额计价」和「Beta」放在中段，结果常用项被挤到下面，
+      早期版本把「金额计价」放在中段，结果常用项被挤到下面，
       每次要滚半页才摸到。按使用频率重排后，常用项一进页面就能看到。
+      （Beta 限流监控已于 2026-10-25 整体删除。）
     -->
     <main class="body">
       <!-- 1. 常规（最常用） -->
@@ -69,7 +69,8 @@
         </div>
         <p class="hint">
           也可以直接<strong>右键</strong>按住胶囊拖动：按住时边框变虚线，胶囊靠近左/右边缘会就地翻成竖条，
-          松手后吸附到离落点最近的一条边（上/左/右）并记住该落点（左键仍是普通点击，不会搬走胶囊）。
+          松手后吸附到离落点最近的一条边（上/左/右）并记住该落点。
+          <strong>左键点击</strong>胶囊展开 / 收起详情卡片（不会搬走胶囊），设置入口在卡片右上角。
         </p>
 
         <div class="row">
@@ -196,48 +197,6 @@
           默认选项保证你看到的数字和 CC Switch 里完全一致；
           如果你的中转站按真实美元结算，选「按真实汇率」才是你实际花掉的人民币。
           选「不换算」则原样显示库里的值（标 <code>$</code>）。
-        </p>
-      </section>
-
-      <!-- 7. Beta 限流监控（实验性功能，默认关闭，放最后） -->
-      <section class="sect">
-        <h2><span class="beta-tag">Beta</span>限流监控</h2>
-
-        <label class="row beta-row">
-          <span class="k">启用限流监控</span>
-          <input type="checkbox" id="rateEnabled" />
-        </label>
-        <p class="hint">
-          从 DSH 会话日志里解析上游 <code>soft_rate</code>（429）报文，把「已限流 / 重置倒计时」
-          显示在圆环与详情面板里。判定规则还在验证中，误报可能把正常可用的模型标红 ——
-          因此<strong>默认关闭</strong>。
-        </p>
-
-        <div class="row">
-          <span class="k">宽限判定</span>
-          <select id="rateGrace">
-            <option value="0">不宽限（没有重置时间就不算限流）</option>
-            <option value="5">5 分钟</option>
-            <option value="15">15 分钟</option>
-            <option value="30">30 分钟</option>
-          </select>
-        </div>
-        <p class="hint">
-          上游有时返回不带重置时刻的限流报文。「宽限判定」决定：距最近一次限流多久内仍算限流中。
-        </p>
-
-        <label class="row">
-          <span class="k">监控 OpenCode（该渠道返回 403 渠道禁止，通常不可用）</span>
-          <input type="checkbox" id="rateOpenCode" />
-        </label>
-
-        <label class="row">
-          <span class="k">纳入 DSH 免费模型（<code>*-free</code>）的限流</span>
-          <input type="checkbox" id="betaRateFreeModel" />
-        </label>
-        <p class="hint">
-          免费模型（如 step-5-preview-free、space-bunny-free）的限流语义与付费模型不同，
-          判定更不确定 —— 单独留一个开关，方便只观察付费模型。
         </p>
       </section>
     </main>

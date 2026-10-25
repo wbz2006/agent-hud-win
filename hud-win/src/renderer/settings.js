@@ -47,12 +47,6 @@ function fill(cfg) {
   $('dailyBudget').value =
     current.dailyBudgetCny != null && current.dailyBudgetCny > 0 ? String(current.dailyBudgetCny) : '';
 
-  $('rateEnabled').checked = !!current.rateEnabled;
-  $('rateGrace').value = String(current.rateGraceMinutes != null ? current.rateGraceMinutes : 5);
-  $('rateOpenCode').checked = !!current.rateOpenCode;
-  // 【Beta】免费模型限流监控，默认关闭
-  $('betaRateFreeModel').checked = !!current.betaRateFreeModel;
-
   // 中转站余额
   const relay = current.relay || {};
   $('relayBaseUrl').value = relay.baseUrl || '';
@@ -101,11 +95,6 @@ function read() {
       const n = Number($('dailyBudget').value);
       return Number.isFinite(n) && n > 0 ? n : 0;
     })(),
-    rateEnabled: $('rateEnabled').checked,
-    rateGraceMinutes: Number($('rateGrace').value),
-    rateOpenCode: $('rateOpenCode').checked,
-    // 【Beta】免费模型限流监控（默认关闭，用户显式开启才存 true）
-    betaRateFreeModel: $('betaRateFreeModel').checked,
     enabledSources: enabled,
     // DeepSeek 官方余额的 API Key（空字符串 = 未配置，UI 显示 "—"）
     deepseekApiKey: (() => {

@@ -108,15 +108,7 @@ async function runOnce(cfg) {
       availability = { ok: false, reason: String((err && err.message) || err), byApp: {} };
     }
 
-    // 限流监控的四个开关（设置页「限流监控」分组）：
-    //   总开关 rateEnabled / OpenCode rateOpenCode / 宽限 rateGraceMinutes
-    //   【Beta】免费模型 betaRateFreeModel（默认关闭）
-    const summary = sources.summarizeAll(agents, Date.now(), {
-      includeFreeModel: !!cfg.betaRateFreeModel,
-      rateEnabled: cfg.rateEnabled !== false,
-      rateOpenCode: cfg.rateOpenCode !== false,
-      rateGraceMinutes: Number(cfg.rateGraceMinutes),
-    });
+    const summary = sources.summarizeAll(agents, Date.now());
     summary.credits = credits;
     summary.deepseekBalance = deepseekBalance;
     summary.relayBalance = relayBalance;

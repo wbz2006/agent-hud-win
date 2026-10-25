@@ -20,7 +20,6 @@ const claude = require('./claude-source');
 const codex = require('./codex-source');
 const dsh = require('./dsh-source');
 const quota = require('./quota');
-const ratelimit = require('./ratelimit');
 
 const SOURCES = [
   { key: 'claude', label: 'Claude Code', collect: claude.collect },
@@ -84,7 +83,7 @@ function collectAll() {
 }
 
 /** 全局汇总：总量、24h 分桶、按 agent 的用量。 */
-function summarizeAll(agents, now = Date.now(), opts = {}) {
+function summarizeAll(agents, now = Date.now()) {
   const DAY = 24 * 60 * 60 * 1000;
   const totals = emptyUsage();
   const buckets = new Array(96).fill(0); // 24h，每 15 分钟一格
@@ -96,17 +95,6 @@ function summarizeAll(agents, now = Date.now(), opts = {}) {
   const allSessions = [];
   for (const a of agents) allSessions.push(...a.sessions);
   const providerQuota = quota.aggregateByProvider(allSessions, { period: 'today', now });
-
-  // 上游限流状态（soft_rate）：只有 DSH 会话里记录了限流事件
-  const dshAgent = agents.find((a) => a.key === 'dsh');
-  const rateLimits = ratelimit.summarizeRateLimits(dshAgent ? dshAgent.sessions : [], {
-    now,
-    includeFreeModel: !!opts.includeFreeModel,
-    // 下面三个来自设置页的「限流监控」分组，此前只写配置、无人消费
-    enabled: opts.rateEnabled !== false,
-    includeOpenCode: opts.rateOpenCode !== false,
-    graceMinutes: Number.isFinite(opts.rateGraceMinutes) ? opts.rateGraceMinutes : null,
-  });
 
   /*
    * Codex 官方登录态的百分比额度（ChatGPT 订阅版的 5h/周窗口）。
@@ -176,7 +164,6 @@ function summarizeAll(agents, now = Date.now(), opts = {}) {
     byModel,
     bySource,
     providers: providerQuota,
-    rateLimits,
     codexQuota,
     sessions: recent.slice(0, 60),
   };

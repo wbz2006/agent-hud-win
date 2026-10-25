@@ -85,31 +85,6 @@ const DEFAULTS = {
   dailyBudgetCny: 8,
   /** 圆环显示模式：auto / rate / credit / activity。 */
   ringMode: 'auto',
-  /**
-   * 【Beta】限流监控总开关 —— **默认关闭**。
-   *
-   * 从 DSH 会话日志解析上游 soft_rate(429) 报文来判定"某模型是否被限流"。
-   * 判定规则尚在验证：上游文案有变动、部分路径不带重置时刻，
-   * 误报会把正常可用的模型标红。因此默认关闭，用户可在设置里显式开启。
-   * 关闭时整个限流区（圆环标红 / 详情面板限流表）不产出任何数据。
-   */
-  rateEnabled: false,
-  /**
-   * 限流宽限（分钟）：上游返回不带重置时刻的限流时，
-   * 距最近一次命中多久内仍判为限流中。0 表示不宽限。
-   */
-  rateGraceMinutes: 5,
-  /** 是否监控 OpenCode（该渠道多为 403 渠道禁止）。 */
-  rateOpenCode: true,
-  /**
-   * 【Beta】DSH 免费模型的限流监控。
-   *
-   * 免费模型（`*-free` 后缀，如 step-5-preview-free / space-bunny-free）
-   * 的限流判定未经验证——免费额度与付费额度的限流语义可能不同，
-   * 误报会把正常可用的模型标红。因此**默认关闭**，用户可在设置里自行开启。
-   * 关闭时，免费模型的限流事件不计入圆环与详情面板。
-   */
-  betaRateFreeModel: false,
   /** 各数据源开关。 */
   enabledSources: { claude: true, codex: true, dsh: true },
   /**
