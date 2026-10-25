@@ -1,6 +1,6 @@
 {
   "name": "agent-hud-win",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Agent HUD for Windows — 一条常驻悬浮条，实时显示本地 AI agent 的用量、额度与限流状态",
   "main": "src/main/main.js",
   "scripts": {
