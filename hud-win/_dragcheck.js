@@ -69,13 +69,20 @@ class CDP {
     if (r.exceptionDetails) throw new Error('JS: ' + (r.exceptionDetails.text || 'error'));
     return r.result ? r.result.value : undefined;
   }
-  mouse(type, x, y, buttons) {
+  mouse(type, x, y, buttons, btn) {
+    const b = buttons || 0;
+    let name = btn;
+    if (!name) {
+      if (type === 'mouseMoved') name = 'none';
+      // 2026-10-25 起拖动键是右键：按位掩码推导（2=右键，1=左键）
+      else name = b === 2 ? 'right' : 'left';
+    }
     return this.send('Input.dispatchMouseEvent', {
       type,
       x,
       y,
-      button: type === 'mouseMoved' ? 'none' : 'left',
-      buttons: buttons || 0,
+      button: name,
+      buttons: b,
       clickCount: type === 'mouseMoved' ? 0 : 1,
     });
   }
@@ -210,10 +217,11 @@ async function jsDrag(cdp, to, steps, onStep) {
   await cdp.eval(`(() => {
     window.__fire = (type, sx, sy) => {
       const el = document.querySelector('#bar');
+      // 2026-10-25 起拖动键是右键：button=2、按下/移动期间 buttons 位掩码含 2
       el.dispatchEvent(new PointerEvent(type, {
         bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true,
-        button: type === 'pointermove' ? -1 : 0,
-        buttons: type === 'pointerup' ? 0 : 1,
+        button: type === 'pointermove' ? -1 : 2,
+        buttons: type === 'pointerup' ? 0 : 2,
         screenX: sx, screenY: sy,
         clientX: sx - window.screenX, clientY: sy - window.screenY,
       }));
@@ -281,9 +289,9 @@ async function main() {
     const hovered = await waitWidened(cdp);
     check('悬停把胶囊加宽（统计与按钮露出来）', hovered.iw > 200, `innerWidth=${hovered.iw}`);
     press = await pressPoint(cdp);
-    await cdp.mouse('mousePressed', press.x, press.y, 1);
+    await cdp.mouse('mousePressed', press.x, press.y, 2);
     await sleep(450);
-    await cdp.mouse('mouseReleased', press.x, press.y, 0);
+    await cdp.mouse('mouseReleased', press.x, press.y, 0, 'right');
     await sleep(500);
     let g = await geom(cdp);
     const docked = expectDocked(g, 'top');
@@ -307,12 +315,12 @@ async function main() {
     check('悬停后 ☰ 按钮有实际尺寸', g.dx.x >= 0 && g.dx.y > 0, `button@${g.dx.x},${g.dx.y} w${g.iw}`);
     await cdp.mouse('mouseMoved', g.dx.x, g.dx.y, 0);
     await sleep(120);
-    await cdp.mouse('mousePressed', g.dx.x, g.dx.y, 1);
-    await cdp.mouse('mouseMoved', g.dx.x + 20, g.dx.y, 1);
+    await cdp.mouse('mousePressed', g.dx.x, g.dx.y, 2);
+    await cdp.mouse('mouseMoved', g.dx.x + 20, g.dx.y, 2);
     await sleep(120);
     g = await geom(cdp);
-    check('按在按钮上移动不进入拖动', g.dragging === false);
-    await cdp.mouse('mouseReleased', g.dx.x + 20, g.dx.y, 0);
+    check('右键按在按钮上移动不进入拖动', g.dragging === false);
+    await cdp.mouse('mouseReleased', g.dx.x + 20, g.dx.y, 0, 'right');
     await sleep(350);
     if (await cdp.eval(`document.querySelector('#panel').classList.contains('open')`)) {
       await cdp.eval(`(() => { const b = document.querySelector('#expandBtn').getBoundingClientRect(); window.dispatchEvent(new Event('blur')); return [b.x, b.y]; })()`);
@@ -324,14 +332,14 @@ async function main() {
     g = await geom(cdp);
     press = await pressPoint(cdp);
     const startX = g.sx;
-    await cdp.mouse('mousePressed', press.x, press.y, 1);
+    await cdp.mouse('mousePressed', press.x, press.y, 2);
     await sleep(60);
-    await cdp.mouse('mouseMoved', press.x + 4, press.y + 1, 1);
+    await cdp.mouse('mouseMoved', press.x + 4, press.y + 1, 2);
     await sleep(90);
     g = await geom(cdp);
     check('位移不足 6px 还不算拿起', g.dragging === false);
 
-    await cdp.mouse('mouseMoved', press.x + 12, press.y + 2, 1);
+    await cdp.mouse('mouseMoved', press.x + 12, press.y + 2, 2);
     await sleep(160);
     g = await geom(cdp);
     const dashed = await cdp.eval(
@@ -344,12 +352,12 @@ async function main() {
     check('顶部横条拖动中仍是横排（body.vertical=false）', g.vertical === false);
 
     const beforeMove = g.sx;
-    await cdp.mouse('mouseMoved', press.x + 52, press.y + 3, 1);
+    await cdp.mouse('mouseMoved', press.x + 52, press.y + 3, 2);
     await sleep(220);
     g = await geom(cdp);
     check('胶囊跟手移动（screenX 变化 ≈ 40px）', Math.abs(g.sx - beforeMove - 40) <= 6, `${beforeMove} → ${g.sx}`);
 
-    await cdp.mouse('mouseReleased', press.x + 52, press.y + 3, 0);
+    await cdp.mouse('mouseReleased', press.x + 52, press.y + 3, 0, 'right');
     await sleep(450);
     g = await geom(cdp);
     check('松手后 dragging 消失', g.dragging === false);

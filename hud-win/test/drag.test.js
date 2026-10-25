@@ -4,7 +4,8 @@
  * 拖动吸附（胶囊在上/左/右三条边之间移动）+ 横竖切换的几何与接线测试。
  *
  * 对应原 macOS 项目的 HUDDragWindowController：
- * 按住左键 → 拿起（虚线边框）→ 跟手移动 → 松手吸附到最近的一条边。
+ * 按住**右键** → 拿起（虚线边框）→ 跟手移动 → 松手吸附到最近的一条边。
+ * （2026-10-25 用户要求：触发键从左键改为右键，左键留给普通点击与按钮。）
  * 与 macOS 版的差别：不保留任意坐标，胶囊只停靠在顶部横条与左右竖条。
  *
  * 这一组的重点：
@@ -369,5 +370,22 @@ test('设置页只提供上/左/右三个停靠选项，并提示可拖动', () 
   assert.match(options, /<option value="right">/);
   assert.doesNotMatch(options, /value="free"/);
   assert.doesNotMatch(options, /top-left/);
-  assert.match(SETTINGS_HTML, /按住胶囊左键拖动/);
+  assert.match(SETTINGS_HTML, /<strong>右键<\/strong>按住胶囊拖动/);
+});
+
+test('拖动触发键是右键（button=2），左键不再搬胶囊', () => {
+  const down = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function onBarPointerDown('));
+  const downBody = down.slice(0, down.indexOf('\n}'));
+  assert.match(downBody, /if \(e\.button !== 2\) return;/, 'pointerdown 必须只认右键');
+  assert.doesNotMatch(downBody, /e\.button !== 0/, '不许再认左键');
+  // 右键手势必须屏蔽系统菜单：菜单弹出会抢走指针捕获 → pointerup 丢失 → dragging 卡死
+  assert.match(RENDERER_CODE, /document\.addEventListener\('contextmenu', \(e\) => e\.preventDefault\(\)\)/);
+  // 鼠标只有一个 pointerId：拖动中松开左键也会派 pointerup，必须按按键过滤
+  const end = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function endDrag('));
+  const endBody = end.slice(0, end.indexOf('\n}'));
+  assert.match(endBody, /if \(e && e\.type === 'pointerup' && e\.button !== 2\) return;/, 'pointerup 只认右键释放');
+  // 右键在窗口外松开时 pointerup 可能收不到 → 用 buttons 位掩码自愈
+  const move = RENDERER_CODE.slice(RENDERER_CODE.indexOf('function onBarPointerMove('));
+  const moveBody = move.slice(0, move.indexOf('\n}'));
+  assert.match(moveBody, /\(e\.buttons & 2\) === 0/, '右键已松开时必须结束拖动，避免 dragging 残留');
 });

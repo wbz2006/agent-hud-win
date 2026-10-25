@@ -59,8 +59,9 @@ const EXPERIMENT = `(async () => {
   const y0 = Math.round(b.y + b.height / 2);
   const mk = (type, sx, buttons) => new PointerEvent(type, {
     bubbles: true, cancelable: true, composed: true,
+    // 2026-10-25 起拖动键是右键（button=2 / buttons 位掩码 2）
     pointerId: 1, pointerType: 'mouse', isPrimary: true,
-    button: 0, buttons, clientX: x0, clientY: y0, screenX: sx, screenY: 400,
+    button: 2, buttons, clientX: x0, clientY: y0, screenX: sx, screenY: 400,
   });
   const series = [];
   const snap = (tag, i, sx) => series.push({
@@ -70,7 +71,7 @@ const EXPERIMENT = `(async () => {
   });
 
   snap('init', -1, 800);
-  bar.dispatchEvent(mk('pointerdown', 800, 1));
+  bar.dispatchEvent(mk('pointerdown', 800, 2));
   await new Promise((r) => setTimeout(r, 420));
   snap('armed', 0, 800);
 
@@ -79,7 +80,7 @@ const EXPERIMENT = `(async () => {
     const pass = Math.floor((i - 1) / 40);
     const dir = pass % 2 === 0 ? 1 : -1;
     sx += dir * 3;
-    bar.dispatchEvent(mk('pointermove', sx, 1));
+    bar.dispatchEvent(mk('pointermove', sx, 2));
     await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 16)));
     if (i % 4 === 0) snap('move', i, sx);
   }

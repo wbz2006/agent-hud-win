@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld('hud', {
   /** 查询热键注册状态（设置页展示）。 */
   getHotkey: () => ipcRenderer.invoke('hud:get-hotkey'),
   /**
-   * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手吸附到最近的边）。
+   * 拖动胶囊改变位置（**右键**按住 → 虚线边框 → 跟手移动 → 松手吸附到最近的边）。
    * dragStart 让主进程落回收起态矩形（宽度取它自己记着的 collapsedWidth，
    * 不能现量：悬停态量到加宽值、启动初期量到空内容）。dragMove 走增量
    * （每帧一次），拖动中还会做横竖翻转与吸附边预测；dragEnd 才把

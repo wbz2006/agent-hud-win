@@ -1433,14 +1433,18 @@ if (expandBtn) {
 }
 
 /* ============================================================
- * 拖动胶囊改变位置（左键按住 → 虚线边框 → 跟手移动 → 松手落盘）
+ * 拖动胶囊改变位置（**右键**按住 → 虚线边框 → 跟手移动 → 松手落盘）
  *
- * 手感对齐原 macOS 项目的 HUDDragWindowController（Notch/Island/）：
- *   · 左键按住胶囊，位移 ≥ 6px **或**按住 ≥ 300ms 才算"拿起"——
+ * 手感对齐原 macOS 项目的 HUDDragWindowController（Notch/Island/），
+ * 按键在 2026-10-25 按用户要求从左键改成右键：左键留给普通点击/按钮，
+ * 右键只用来搬胶囊，误拖的概率大幅降低。
+ *   · 右键按住胶囊，位移 ≥ 6px **或**按住 ≥ 300ms 才算"拿起"——
  *     拿起之前只是普通按下，松开什么也不发生（点按钮照旧）
  *   · 拿起瞬间 body 加 .dragging：胶囊出现虚线边框，光标变抓手
- *   · 移动按增量驱动主进程 win.setPosition；松手才写盘
- *     （hud:drag-end → config: dock='free' + freePos），不逐帧写盘
+ *   · 移动按增量驱动主进程 setBounds；松手才写盘
+ *     （hud:drag-end → config: dock + dockPos[落点]），不逐帧写盘
+ *   · 全窗口屏蔽 contextmenu：右键手势不能弹出系统菜单，否则捕获被抢、
+ *     pointerup 丢失，dragging 会卡住
  * ============================================================ */
 const DRAG_TRAVEL = 6;    // 与原项目 HUDDragView.travel 一致
 const DRAG_HOLD_MS = 300; // 与原项目 holdDelay 一致
@@ -1500,10 +1504,13 @@ function dragMoveFrame() {
 }
 
 function onBarPointerDown(e) {
-  // 只认左键；按钮（☰ ⟳ ⚙ ⊖ ✕）归按钮，不参与拖动
-  if (e.button !== 0) return;
+  // 只认右键（2026-10-25 用户要求：左键按住改为右键按住移动）；
+  // 按钮（☰ ⟳ ⚙ ⊖ ✕）归按钮，不参与拖动
+  if (e.button !== 2) return;
   if (!window.hud || !window.hud.dragStart) return;
   if (e.target && e.target.closest && e.target.closest('.icon-btn')) return;
+  // 阻止右键按下可能带出的选区/拖拽默认行为（contextmenu 另在下面统一挡掉）
+  if (e.cancelable) e.preventDefault();
   drag = {
     id: e.pointerId,
     sx: e.screenX,
@@ -1527,6 +1534,15 @@ function onBarPointerDown(e) {
 
 function onBarPointerMove(e) {
   if (!drag || e.pointerId !== drag.id) return;
+  /*
+   * 右键在外面松开时 pointerup 可能收不到（窗口失焦/捕获丢失），
+   * 而 dragging 一旦残留就会永久冻结悬停与窗口自适应 —— 用 buttons
+   * 位掩码自愈：只要右键已经不在按下状态，就当场收尾。
+   */
+  if (typeof e.buttons === 'number' && (e.buttons & 2) === 0) {
+    endDrag();
+    return;
+  }
   const dx = e.screenX - drag.lx;
   const dy = e.screenY - drag.ly;
   if (!drag.armed) {
@@ -1556,6 +1572,12 @@ function endDrag(e) {
     return;
   }
   if (e && e.pointerId !== drag.id) return;
+  /*
+   * 鼠标只有一个 pointerId，所以松开**左**键也会走到这里（拖动期间用户
+   * 完全可能顺手点一下左键）。只认右键（button=2）的抬起作为手势结束，
+   * pointercancel / blur 例外（它们没有按键语义，必须无条件收尾）。
+   */
+  if (e && e.type === 'pointerup' && e.button !== 2) return;
   const armed = drag.armed;
   const moved = !!drag.moved;
   if (drag.timer) clearTimeout(drag.timer);
@@ -1577,6 +1599,12 @@ bar.addEventListener('pointermove', onBarPointerMove);
 bar.addEventListener('pointerup', endDrag);
 bar.addEventListener('pointercancel', endDrag);
 window.addEventListener('blur', () => endDrag());
+/*
+ * 右键是拖动键，所以整个 HUD 窗口都不该弹系统菜单：
+ * 菜单一弹就会抢走指针捕获，pointerup 收不到 → dragging 永久残留
+ * （悬停轮询与窗口自适应会一起失效）。HUD 里本来也没有需要右键菜单的东西。
+ */
+document.addEventListener('contextmenu', (e) => e.preventDefault());
 
 /**
  * 主进程轮询光标得出的 hover 通知（唯一可信的"是否还在窗口内"依据）。

@@ -24,8 +24,9 @@ public static class RM {
 
 $null = [RM]::SetProcessDPIAware()
 Add-Type -AssemblyName System.Windows.Forms
-$LEFTDOWN = 0x02
-$LEFTUP = 0x04
+# Drag key is the RIGHT button since 2026-10-25 (user request).
+$RIGHTDOWN = 0x0008
+$RIGHTUP = 0x0010
 
 function Get-Rect($proc) {
   $r = New-Object RM+RECT
@@ -54,7 +55,7 @@ if ($Phase -eq 'top') {
   $s = Get-Rect $hud
   Write-Output ("T0 hover   {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
 
-  $null = [RM]::mouse_event($LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+  $null = [RM]::mouse_event($RIGHTDOWN, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 420
   $s = Get-Rect $hud
   Write-Output ("T1 hold    {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
@@ -66,7 +67,7 @@ if ($Phase -eq 'top') {
     Write-Output ("T2 step{0}  {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
   }
 
-  $null = [RM]::mouse_event($LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+  $null = [RM]::mouse_event($RIGHTUP, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 700
   $s = Get-Rect $hud
   Write-Output ("T3 release {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
@@ -88,14 +89,14 @@ if ($Phase -eq 'left') {
   $cy = [int]($rc.y + $rc.h / 2)
   $null = [RM]::SetCursorPos($cx, $cy)
   Start-Sleep -Milliseconds 450
-  $null = [RM]::mouse_event($LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+  $null = [RM]::mouse_event($RIGHTDOWN, 0, 0, 0, [UIntPtr]::Zero)
   for ($i = 1; $i -le 14; $i++) {
     $null = [RM]::SetCursorPos($cx - $i * 40, $cy + $i * 22)
     Start-Sleep -Milliseconds 140
     $s = Get-Rect $hud
     Write-Output ("L step{0}  {1},{2} {3}x{4}" -f $i, $s.x, $s.y, $s.w, $s.h)
   }
-  $null = [RM]::mouse_event($LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+  $null = [RM]::mouse_event($RIGHTUP, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 900
   $s = Get-Rect $hud
   Write-Output ("L release  {0},{1} {2}x{3}" -f $s.x, $s.y, $s.w, $s.h)
