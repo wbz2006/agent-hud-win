@@ -167,16 +167,81 @@ function renderRates(rateLimits) {
  * @param {object} [opts]
  * @param {boolean} [opts.credits=true]  是否渲染 WorkBuddy 积分段
  * @param {boolean} [opts.relay=false]   是否渲染中转站余额段（Codex 用）
+ * @param {boolean} [opts.official=false] 是否渲染 GPT 官方百分比段（官方登录的 5h/周窗口）
  */
 function renderQuotas(summary, opts = {}) {
   const el = $('quotas');
   const wantCredits = opts.credits !== false;
   const wantRelay = !!opts.relay;
+  const wantOfficial = !!opts.official;
   const credits = wantCredits ? summary.credits || [] : [];
   const providers = summary.providers || [];
   const parts = [];
 
-  // 0) 中转站余额（Codex 走中转站时唯一能拿到的真实余额）
+  // 0) GPT 官方百分比额度（ChatGPT 订阅版的 5 小时 / 周窗口）。
+  //
+  //    数据来自本地 rollout（codex-source.js 解析 token_count 的 rate_limits），
+  //    与官方登录态绑定；走中转站时全库无值，wantOfficial 为 false 或
+  //    codexQuota 为 null，这里一个字都不渲染 —— 绝不编造百分比。
+  //
+  //    used_percent 是"该窗口已用百分比"，显示"剩余 = 100 - used"。
+  //    resets_at 实测可为 null（上游窗口刚开始时不返回），此时只说
+  //    「重置时刻未知」，不算倒计时。
+  let officialShown = false;
+  const official = wantOfficial ? summary.codexQuota : null;
+  if (official) {
+    const windows = [];
+    if (official.primary) windows.push(official.primary);
+    if (official.secondary) windows.push(official.secondary);
+    if (windows.length) {
+      officialShown = true;
+      const srcTag = official.planType ? `（${esc(official.planType)}）` : '';
+      parts.push(`<div class="quota-sep">GPT 官方额度${srcTag}</div>`);
+      for (const w of windows) {
+        const remain = 100 - w.usedPercent;
+        // 剩余越少越红，阈值与积分区一致（>=50 绿 / >=20 黄 / 更低红）
+        const color = remain >= 50 ? COLOR.ok : remain >= 20 ? COLOR.w : COLOR.c;
+        const winName =
+          w.windowMinutes === 300
+            ? '5 小时窗口'
+            : w.windowMinutes === 10080
+              ? '7 天窗口'
+              : w.windowMinutes
+                ? `${Math.round(w.windowMinutes / 60)} 小时窗口`
+                : '窗口';
+        const resetTip = w.resetsAt
+          ? `重置 ${new Date(w.resetsAt).toLocaleString('zh-CN', {
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            })}`
+          : '重置时刻未知（上游未返回）';
+        // 数据时刻必须露出：窗口内的 used_percent 只增不减，但离上次官方
+        // 会话越久越"陈旧"，用户要知道这个数是几点采的。
+        const tipBits = [
+          `已用 ${Math.round(w.usedPercent)}%`,
+          official.fetchedAt
+            ? `数据 ${new Date(official.fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+            : '',
+          resetTip,
+        ].filter(Boolean);
+        parts.push(`<div class="quota-row">
+          <div class="quota-top">
+            <span class="quota-name">GPT 官方 ${esc(winName)}</span>
+            <span class="quota-credit" style="color:${color}">剩余 ${Math.round(remain)}%</span>
+          </div>
+          <span class="quota-track"><span class="quota-fill" style="width:${Math.max(2, Math.round(remain))}%;background:${color}"></span></span>
+          <div class="quota-packs">
+            <span class="quota-pack">${esc(tipBits.join(' · '))}</span>
+          </div>
+        </div>`);
+      }
+    }
+  }
+
+  // 1) 中转站余额（Codex 走中转站时唯一能拿到的真实余额）
   let relayShown = false;
   const relay = summary.relayBalance;
   if (wantRelay && relay && relay.ok) {
@@ -199,7 +264,7 @@ function renderQuotas(summary, opts = {}) {
     </div>`);
   }
 
-  // 1) 真实剩余额度（可能有两个账号：国内版 / 国际版）
+  // 2) 真实剩余额度（可能有两个账号：国内版 / 国际版）
   let creditShown = 0;
   for (const c of credits) {
     if (!c.ok) continue;
@@ -233,7 +298,7 @@ function renderQuotas(summary, opts = {}) {
     </div>`);
   }
 
-  // 2) 取不到的账号：如实说明原因
+  // 3) 取不到的账号：如实说明原因
   for (const c of credits) {
     if (c.ok) continue;
     parts.push(`<div class="quota-row">
@@ -244,7 +309,7 @@ function renderQuotas(summary, opts = {}) {
     </div>`);
   }
 
-  // 3) 本地消耗量（判断今天烧得快不快）
+  // 4) 本地消耗量（判断今天烧得快不快）
   const top = providers.slice(0, 4);
   if (top.length) {
     const maxCalls = top[0].calls || 1;
@@ -275,7 +340,9 @@ function renderQuotas(summary, opts = {}) {
    * 现在只有拿到数据才写采集时间，拿不到就留空。
    */
   $('quotaNote').textContent =
-    creditShown || relayShown ? new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    creditShown || relayShown || officialShown
+      ? new Date(summary.generatedAt).toLocaleTimeString('zh-CN', { hour12: false })
+      : '';
 }
 
 /** 中转站金额格式化：最多 2 位小数，避免一长串浮点尾巴。 */
@@ -1102,11 +1169,13 @@ function render(summary) {
   }
 
   /*
-   * 额度区：按工具分两部分，谁的数据谁显示。
+   * 额度区：按工具分三部分，谁的数据谁显示。
    *
    *  - WorkBuddy 积分（DSH 源）：只有 DSH 有积分概念
    *  - 中转站余额（Codex 源）：Codex 走中转站时官方额度接口拿不到，
    *    改用中转站自己的余额接口（relay.js）
+   *  - GPT 官方百分比（Codex 源）：官方登录态的 5h/周窗口，数据在本地
+   *    rollout 里（codex-source.js 解析）；走中转站时无值，不显示。
    *
    * 为什么之前「Codex 的额度区显示成 WorkBuddy」：
    * 原先是 showQuota = (activeSource === 'all' || activeSource === 'dsh')，
@@ -1118,17 +1187,34 @@ function render(summary) {
   const showCredits = activeSource === 'all' || activeSource === 'dsh';
   const relay = summary.relayBalance || null;
   const showRelay = (activeSource === 'all' || activeSource === 'codex') && relay && relay.ok;
-  const showQuota = showCredits || showRelay;
+  /*
+   * GPT 官方百分比：只在真拿到窗口数据时显示（primary/secondary 任一存在）。
+   * 不按 provider 过滤 —— 中转站若转发官方窗口同样显示，按数据说话。
+   */
+  const official = summary.codexQuota || null;
+  const showOfficial =
+    (activeSource === 'all' || activeSource === 'codex') &&
+    !!official &&
+    !!(official.primary || official.secondary);
+  const showQuota = showCredits || showRelay || showOfficial;
 
   if (quotaSection) quotaSection.hidden = !showQuota;
 
   if (showQuota) {
-    // 标题随场景改名：Codex Tab 只显示中转站，DSH Tab 只显示积分
+    // 标题随场景改名：多个数据段并存时叫「额度」，单一时叫具体名
     const title = quotaSection && quotaSection.querySelector('.panel-head > span');
     if (title) {
-      title.textContent = showCredits && showRelay ? '额度' : showRelay ? '中转站余额' : '额度（积分）';
+      const sections = [showCredits, showRelay, showOfficial].filter(Boolean).length;
+      title.textContent =
+        sections > 1
+          ? '额度'
+          : showOfficial
+            ? 'GPT 官方额度'
+            : showRelay
+              ? '中转站余额'
+              : '额度（积分）';
     }
-    renderQuotas(summary, { credits: showCredits, relay: showRelay });
+    renderQuotas(summary, { credits: showCredits, relay: showRelay, official: showOfficial });
   } else {
     $('quotas').innerHTML = '';
     $('quotaNote').textContent = '';

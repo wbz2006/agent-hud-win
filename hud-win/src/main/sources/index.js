@@ -108,6 +108,16 @@ function summarizeAll(agents, now = Date.now(), opts = {}) {
     graceMinutes: Number.isFinite(opts.rateGraceMinutes) ? opts.rateGraceMinutes : null,
   });
 
+  /*
+   * Codex 官方登录态的百分比额度（ChatGPT 订阅版的 5h/周窗口）。
+   * 数据在本地 rollout 里，与登录态绑定 —— 走中转站时全库无值，
+   * 这里返回 null，UI 隐藏该区块（绝不编造百分比）。
+   */
+  const codexAgent = agents.find((a) => a.key === 'codex');
+  const codexQuota = codexAgent
+    ? codex.collectOfficialQuota(codexAgent.sessions)
+    : null;
+
   for (const a of agents) {
     for (const k of Object.keys(totals)) totals[k] += a.totals[k] || 0;
     bySource[a.key] = {
@@ -167,6 +177,7 @@ function summarizeAll(agents, now = Date.now(), opts = {}) {
     bySource,
     providers: providerQuota,
     rateLimits,
+    codexQuota,
     sessions: recent.slice(0, 60),
   };
 }
