@@ -1,16 +1,31 @@
 /* Agent HUD 设置窗口
- * 与悬浮条共用同一套设计 token（见悬浮条的 styles.css）。 */
+ * 与悬浮条共用同一套设计 token（见悬浮条的 styles.css）。
+ *
+ * 2026-10-26 视觉改版：
+ *   · 分区从"细线分隔的平铺段落"改成**卡片**——圆角面板 + 微弱描边，
+ *     卡片之间留呼吸空隙，扫一眼就能看出"一共有几组设置"。
+ *   · 主色从蓝色换成 HUD 品牌绿（--ok #3ddc84）：开关、焦点态、主按钮
+ *     与悬浮条圆环的"可用绿"同源，两个窗口是一个产品。
+ *   · checkbox 统一画成**拨杆开关**（appearance:none 纯 CSS，无 JS 参与）。
+ *   · 所有输入控件统一 30px 高、统一的 hover/focus 态（绿色描边 + 柔光圈）。
+ */
 
 :root {
   --ok: #3ddc84;
   --warning: #ffd23f;
   --critical: #ff453a;
-  --surface: #16161a;
-  --surface-2: #1e1e23;
-  --stroke: rgba(255, 255, 255, 0.10);
+  --surface: #141418;
+  --surface-2: #1c1c22;
+  --surface-3: #101014;
+  --stroke: rgba(255, 255, 255, 0.09);
   --text: #f2f2f4;
   --text-dim: rgba(242, 242, 244, 0.55);
-  --accent: #7aa2f7;
+  --text-faint: rgba(242, 242, 244, 0.38);
+  /* 主色 = HUD 可用绿（原为蓝色 #7aa2f7，与悬浮条的品牌色脱节） */
+  --accent: #3ddc84;
+  --accent-soft: rgba(61, 220, 132, 0.16);
+  --radius-card: 12px;
+  --radius-ctl: 8px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -24,81 +39,148 @@ html, body {
   user-select: none;
 }
 
+/* 文本可选中：说明文字与状态提示允许复制（报错信息发给开发者要看原文） */
+.hint, .status, .src-count { user-select: text; }
+
 .win { display: flex; flex-direction: column; height: 100vh; }
 
-/* 标题栏 */
+/* ---------- 标题栏 ---------- */
 .head {
   display: flex; align-items: center; gap: 10px;
-  padding: 12px 14px;
+  padding: 13px 16px;
   border-bottom: 1px solid var(--stroke);
-  background: var(--surface-2);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)) var(--surface-2);
 }
-.title { font-size: 13px; font-weight: 600; flex: 1; }
+/* 标题前的小圆点：品牌色锚点，让窗口一眼"属于"HUD */
+.title {
+  font-size: 13px; font-weight: 600; flex: 1;
+  display: flex; align-items: center; gap: 8px;
+}
+.title::before {
+  content: "";
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(61, 220, 132, 0.55);
+}
 
-/* 内容区 */
-.body { flex: 1; overflow-y: auto; padding: 4px 14px 14px; }
+/* ---------- 内容区 ---------- */
+.body { flex: 1; overflow-y: auto; padding: 12px 14px 16px; }
 
 /*
- * 滚动条：黑色 + 窄。
- * 不写这段时用 Windows 系统默认（浅灰、约 17px 宽），
- * 在深色界面里非常突兀。改成 6px 宽、深色轨道 + 半透明深灰滑块。
+ * 滚动条：窄 + 半透明浅灰。
+ * 不写这段时用 Windows 系统默认（浅灰、约 17px 宽），在深色界面里非常突兀。
  */
 .body::-webkit-scrollbar { width: 6px; }
 .body::-webkit-scrollbar-track { background: transparent; }
 .body::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 3px;
 }
-.body::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.65); }
+.body::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); }
 
+/* 卡片式分区 */
 .sect {
-  padding: 14px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px 16px 15px;
+  margin: 0 0 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
-.sect:last-child { border-bottom: none; }
+.sect:last-child { margin-bottom: 0; }
+
 .sect h2 {
   font-size: 11px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.7px;
+  text-transform: uppercase; letter-spacing: 0.8px;
   color: var(--text-dim);
   margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+/* 标题左侧的绿色短竖条：卡片内的视觉锚点 */
+.sect h2::before {
+  content: "";
+  width: 3px; height: 11px;
+  border-radius: 2px;
+  background: var(--ok);
+  flex: none;
 }
 
-/* 一行设置项 */
-.row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+/* 一行设置项：hover 微亮，反馈"这一行是一个整体" */
+.row { display: flex; align-items: center; gap: 12px; padding: 7px 8px; margin: 0 -8px; border-radius: var(--radius-ctl); }
+.row:hover { background: rgba(255, 255, 255, 0.03); }
 .row .k { flex: 1; }
 
-/* 控件 */
-input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
-select {
-  min-width: 190px;
-  padding: 5px 8px;
+/* ---------- 拨杆开关（所有 checkbox 统一） ---------- */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 34px; height: 19px;
+  flex: none;
+  border-radius: 999px;
   border: 1px solid var(--stroke);
-  border-radius: 6px;
-  background: var(--surface-2);
+  background: rgba(255, 255, 255, 0.12);
+  position: relative;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+/* 滑块 */
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  transition: transform 160ms cubic-bezier(0.3, 0.8, 0.4, 1);
+}
+input[type="checkbox"]:checked {
+  background: var(--ok);
+  border-color: transparent;
+}
+input[type="checkbox"]:checked::after { transform: translateX(15px); background: #0d1512; }
+input[type="checkbox"]:hover:not(:checked) { background: rgba(255, 255, 255, 0.18); }
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---------- 输入控件（select / text / number 统一形态） ---------- */
+select,
+input[type="text"],
+input[type="number"] {
+  padding: 6px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-3);
   color: var(--text);
   font: inherit; font-size: 12px;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+/* 进来的第一眼就分得清"能不能点"：hover 先亮一档 */
+select:hover, input[type="text"]:hover, input[type="number"]:hover { border-color: rgba(255, 255, 255, 0.2); }
+select:focus, input[type="text"]:focus, input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+select {
+  min-width: 190px;
   cursor: pointer;
 }
-select:focus { outline: none; border-color: var(--accent); }
 /* Windows 上展开的选项列表默认白底黑字，这里压回深色 */
 select option {
   background: var(--surface-2);
   color: var(--text);
 }
 
-/* 文本输入（热键等） */
+/* 文本输入（中转站地址等）：地址用等宽字体更易读 */
 input[type="text"] {
   min-width: 190px;
-  padding: 5px 8px;
-  border: 1px solid var(--stroke);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit; font-size: 12px;
   font-family: "Cascadia Mono", Consolas, monospace;
 }
-input[type="text"]:focus { outline: none; border-color: var(--accent); }
-input[type="text"]::placeholder { color: var(--text-dim); font-family: inherit; }
+input[type="text"]::placeholder { color: var(--text-faint); font-family: inherit; }
 
 /* ---------- 热键录制态 ---------- */
 /*
@@ -107,37 +189,23 @@ input[type="text"]::placeholder { color: var(--text-dim); font-family: inherit; 
  */
 .hotkey-input {
   cursor: pointer;
-  font-family: var(--mono, ui-monospace, Consolas, monospace);
   letter-spacing: 0.3px;
 }
-
 .hotkey-input.recording {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-3));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   cursor: text;
 }
-
-.hint.recording {
-  color: var(--accent);
-}
+.hint.recording { color: var(--accent); }
 
 /*
- * 数字输入（今日预算等）—— 必须显式写全。
- * 漏了这条时浏览器给 input[type=number] 用**白色默认背景**，
- * 在深色界面里像一块亮斑（截图里"今日预算"那个框就是）。
+ * 数字输入（今日预算等）—— 显式写全，避免浏览器白色默认背景成为亮斑。
  */
 input[type="number"] {
   min-width: 110px;
-  padding: 5px 8px;
-  border: 1px solid var(--stroke);
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit; font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-input[type="number"]:focus { outline: none; border-color: var(--accent); }
 /* 去掉数字框右侧的上下箭头，与整体风格统一 */
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
@@ -146,36 +214,100 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
-/* 热键注册状态提示 */
+/* ---------- 说明文字 ---------- */
+.hint {
+  font-size: 11px; line-height: 1.55;
+  color: var(--text-dim);
+  margin: 3px 0 10px;
+}
+.sect .row + .hint { margin-top: 2px; }
+.hint code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.hint strong { color: var(--text); font-weight: 600; }
+
+/* 状态提示（热键注册 / 中转站测试） */
+.hint.ok { color: var(--ok); }
+.hint.bad { color: var(--critical); }
 #hotkeyStatus.ok { color: var(--ok); }
 #hotkeyStatus.bad { color: var(--critical); }
 
-/* 说明文字 */
-.hint {
-  font-size: 11px; line-height: 1.5;
-  color: var(--text-dim);
-  margin: 2px 0 8px;
-}
-
-/* 数据源勾选列表 */
-.sources { display: flex; flex-direction: column; gap: 2px; }
+/* ---------- 勾选列表（数据源 / 圆环排序，两列共用） ---------- */
+.sources { display: flex; flex-direction: column; gap: 3px; }
 .src-row {
   display: flex; align-items: center; gap: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-ctl);
+  background: var(--surface-3);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 130ms ease, border-color 130ms ease;
 }
-.src-row:hover { background: rgba(255, 255, 255, 0.04); }
+.src-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.1);
+}
 .src-name { flex: 1; }
 .src-count { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
-/* 底栏 */
+/* 圆环排序列表（勾选 + ↑↓，见设置页「悬浮条圆环」） */
+.ring-row { padding-top: 5px; padding-bottom: 5px; }
+.ring-row.off .src-name,
+.ring-row.off .ring-logo,
+.ring-row.off .ring-badge { opacity: 0.4; }
+.ring-logo { width: 16px; height: 16px; flex: none; }
+.ring-badge {
+  width: 16px; height: 16px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 10px; color: var(--text-dim);
+}
+.mini-btn {
+  width: 22px; height: 20px;
+  padding: 0;
+  border: 1px solid var(--stroke);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px; line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.mini-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mini-btn:disabled { opacity: 0.25; cursor: default; }
+
+/* 「展开/收起未启用的环」：弱化为整宽的次级按钮，不与正式设置行抢视觉 */
+.ring-more {
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px dashed var(--stroke);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit; font-size: 11px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.ring-more:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- 底栏 ---------- */
 .foot {
   display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px;
+  padding: 11px 16px;
   border-top: 1px solid var(--stroke);
   background: var(--surface-2);
 }
 .status { flex: 1; font-size: 11px; color: var(--text-dim); }
+
 /* Beta 功能：标签 + 缩进，视觉上与稳定功能区分开 */
 .beta-tag {
   display: inline-block;
@@ -191,23 +323,40 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 .beta-row { border-left: 2px solid rgba(255, 210, 63, 0.35); padding-left: 10px; }
 
+/* ---------- 按钮 ---------- */
 .btns { display: flex; gap: 8px; }
 
 .btn {
-  padding: 6px 14px;
+  padding: 7px 16px;
   border: 1px solid var(--stroke);
-  border-radius: 6px;
+  border-radius: var(--radius-ctl);
   background: transparent;
   color: var(--text);
   font: inherit; font-size: 12px;
   cursor: pointer;
-  transition: background 150ms ease;
+  transition: background 140ms ease, border-color 140ms ease, transform 80ms ease;
 }
-.btn:hover { background: rgba(255, 255, 255, 0.07); }
+.btn:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.18); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+
 .btn.primary {
-  background: var(--accent);
+  background: linear-gradient(180deg, #46e691, var(--ok));
   border-color: transparent;
-  color: #10131a;
+  color: #0c120e;
   font-weight: 600;
+  box-shadow: 0 1px 4px rgba(61, 220, 132, 0.28);
 }
-.btn.primary:hover { filter: brightness(1.1); }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.primary:active { transform: translateY(1px); box-shadow: none; }
+
+/* 图标按钮（标题栏 ✕，当前 hidden，保留能力） */
+.icon-btn {
+  width: 24px; height: 24px;
+  border: none; border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }

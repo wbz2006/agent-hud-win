@@ -12,6 +12,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('hudSettings', {
   /** 读取当前配置（含默认值合并）。 */
   get: () => ipcRenderer.invoke('hud:get-config'),
+  /** 各环数据监测状态（会话数 / CC Switch 账本按 app 的今日请求与金额）。 */
+  getDataStats: () => ipcRenderer.invoke('hud:get-data-stats'),
   /** 保存配置，返回保存后的完整配置。 */
   save: (patch) => ipcRenderer.invoke('hud:save-settings', patch),
   /** 开机自启开关。 */

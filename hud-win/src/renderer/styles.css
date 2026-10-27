@@ -106,13 +106,19 @@ body.dragging .bar::before {
 body.dragging .panel { display: none; }
 
 /*
- * 卡片展开时胶囊保持紧凑（不铺满窗口宽度）——2026-10-25 用户反馈
- * "展开卡片时胶囊会完全展开"。
+ * 胶囊保持紧凑（不铺满窗口宽度）——2026-10-25 用户反馈"展开卡片时胶囊会完全展开"。
  *
- * 窗口为面板加宽后，.bar 作为块级子元素默认铺满整行，三个环漂浮在一条
+ * 窗口为面板加宽后，.bar 作为块级子元素默认铺满整行，环组漂浮在一条
  * 通栏大黑条上。width: fit-content 让它缩回胶囊本身的大小，margin auto
- * 水平居中（窗口对称加宽，居中 = 胶囊原地不动）。竖排不参与：竖条宽度
- * 锁死 52px（body.vertical 的 min/max-width 优先级更高，但显式排除更稳）。
+ * 水平居中（窗口对称加宽，居中 = 胶囊原地不动）。
+ *
+ * 注意这条**只救得了打开态**：关闭时 panel-open 摘掉、窗口要等 FADE_MS
+ * 才收拢，这 180ms 里 .bar 退回 width:auto 铺满卡片宽的窗口（用户看到的
+ * "关闭后胶囊一瞬间和卡片一样宽"）。而收起态的 .marks 是绝对定位，
+ * fit-content 量不到它 —— 所以淡出期的宽度由 renderer 在关闭时用内联
+ * 样式钉在收起宽上（见 wantExpand(false)），等窗口收拢后再清除。
+ * 竖排不参与：竖条宽度锁死 52px（body.vertical 的 min/max-width 优先级
+ * 更高，但显式排除更稳）。
  */
 body.panel-open:not(.vertical) .bar {
   width: fit-content;
@@ -150,6 +156,81 @@ body.measuring .bar > * { transition: none !important; }
   /* 胶囊底色不再随可用性变化（绿/红底已全部移除，2026-10-24），
    * 状态只由圆环颜色、图标变色与悬停提示表达。 */
 }
+
+/* ---------- 胶囊流光（金额数据健康度，2026-10-27 用户要求） ----------
+ * **整体律动**：两条光带以不同速度、相反方向扫过整个胶囊表面，叠加缓慢的
+ * 呼吸脉动 —— 黑底上绿（或红）光缓缓流动，而不是只描边。
+ *   body[data-flow="ok"]  → 黑绿律动（所有可见环都拿到了正确金额）
+ *   body[data-flow="bad"] → 红黑律动（任一可见环的金额是「—」：账本读不到等）
+ *   无 data-flow          → 不显示（启动首帧还没有数据，不预判健康度）
+ *
+ * 实现：::after 铺满胶囊表面，linear-gradient 光带用 no-repeat + 大背景尺寸，
+ * background-position 由两个 @property 注册的百分比变量驱动（keyframes 才能
+ * 对自定义属性做线性插值，Chromium 85+；Electron 33 满足）。两层速度不同
+ * （9s / 反向），光带始终至少一条在屏内，循环无跳变。
+ * z-index:-1 + .bar isolation：光带压在胶囊底色之上、环与金额之下，不遮挡内容。
+ * ::before 留给拖动虚线（body.dragging .bar::before），流光用 ::after。
+ */
+@property --flow-x1 {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 175%;
+}
+@property --flow-x2 {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: -175%;
+}
+.bar {
+  /* 让负 z-index 的 ::after 落在"自身底色之上、内容之下"这一层 */
+  isolation: isolate;
+}
+.bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, transparent 14%, var(--flow-c) 40%, transparent 62%) no-repeat,
+    linear-gradient(65deg, transparent 34%, var(--flow-c2) 52%, transparent 72%) no-repeat;
+  background-size: 230% 100%, 280% 100%;
+  background-position: var(--flow-x1) 0, var(--flow-x2) 0;
+  box-shadow: inset 0 0 0 1px var(--flow-edge);
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+body[data-flow] .bar::after {
+  opacity: 1;
+  animation:
+    bar-flow 9s linear infinite,
+    bar-pulse 4.5s ease-in-out infinite alternate;
+}
+body[data-flow='ok'] .bar::after {
+  --flow-c: rgba(61, 220, 132, 0.2);
+  --flow-c2: rgba(61, 220, 132, 0.3);
+  --flow-edge: rgba(61, 220, 132, 0.26);
+}
+body[data-flow='bad'] .bar::after {
+  --flow-c: rgba(255, 69, 58, 0.22);
+  --flow-c2: rgba(255, 69, 58, 0.32);
+  --flow-edge: rgba(255, 69, 58, 0.3);
+}
+/* 两个变量同一动画驱动：光带反向而行（x1 向左、x2 向右），速度差产生律动 */
+@keyframes bar-flow {
+  to {
+    --flow-x1: -230%;
+    --flow-x2: 275%;
+  }
+}
+/* 呼吸：整层亮度缓慢起伏，静下来看也有"活着"的感觉 */
+@keyframes bar-pulse {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+/* 拖动时边框是虚线（body.dragging .bar::before），流光退场不添乱 */
+body.dragging .bar::after { display: none; }
 
 /*
  * ---------- 胶囊可用性状态 ----------

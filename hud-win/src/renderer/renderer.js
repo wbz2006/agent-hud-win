@@ -464,20 +464,21 @@ function renderTabs(summary) {
   /*
    * 顺序必须与胶囊里的圆环一致。
    *
-   * 胶囊按 SOURCE_VENDOR 的键序渲染（codex → claude → dsh），
-   * 但 bySource 是采集层给的，键序是 claude → codex → dsh。
-   * 直接遍历 bySource 会让 Tab 顺序和上面的圆环对不上，
-   * 用户点的"第二个"和看到的"第二个环"是不同工具。
-   * 所以这里按 SOURCE_VENDOR 的键序来，再补上它没涵盖的源。
+   * 胶囊按 RING_LAYOUT（设置页排序）渲染，但 bySource 是采集层给的，
+   * 键序是 claude → codex → dsh。直接遍历 bySource 会让 Tab 顺序和上面的
+   * 圆环对不上，用户点的"第二个"和看到的"第二个环"是不同工具。
+   * 所以先按 RING_LAYOUT 里数据源环的顺序来，再补上它没涵盖的源
+   * （CC Switch app 型环没有会话数据，不出 Tab）。
    */
+  const layoutSources = RING_LAYOUT.filter((k) => RING_DEFS[k] && RING_DEFS[k].kind === 'source');
   const ordered = [
-    ...Object.keys(SOURCE_VENDOR).filter((k) => bySrc[k]),
-    ...Object.keys(bySrc).filter((k) => !(k in SOURCE_VENDOR)),
+    ...layoutSources.filter((k) => bySrc[k]),
+    ...Object.keys(bySrc).filter((k) => !layoutSources.includes(k)),
   ];
   for (const key of ordered) {
     const s = bySrc[key];
     if (!s || !s.ok) continue; // 采集失败的源不占位置
-    tabs.push({ key, label: s.label || key, logo: SOURCE_VENDOR[key] && SOURCE_VENDOR[key].logo });
+    tabs.push({ key, label: s.label || key, logo: RING_DEFS[key] && RING_DEFS[key].logo });
   }
 
   // 当前选中的源如果消失了（比如关掉了数据源），退回「全部」
@@ -595,6 +596,10 @@ async function loadBudget() {
     const cfg = await window.hud.getConfig();
     const n = Number(cfg && cfg.dailyBudgetCny);
     if (Number.isFinite(n) && n > 0) DAILY_BUDGET_CNY = n;
+    // 圆环集合与顺序也来自配置（设置页「悬浮条圆环」里勾选 + 排序的结果）
+    if (Array.isArray(cfg && cfg.ringLayout) && cfg.ringLayout.length) {
+      RING_LAYOUT = cfg.ringLayout.filter((k) => RING_DEFS[k]);
+    }
     // 配置拿到后立刻重绘一次，让环弧与行式用量按新预算计算
     if (currentSummary) render(currentSummary);
   } catch (_) {
@@ -762,6 +767,45 @@ const SOURCE_VENDOR = {
   dsh: { vendor: 'dsh', label: 'DeepSeek', logo: 'deepseek.png' },
 };
 
+/*
+ * CC Switch app_type 环（无会话采集的纯账本环）。
+ *
+ * CC Switch 支持 13 个 app（AppType 枚举），其中 claude-desktop 在账本层
+ * 已归一化进 claude 环，codex/claude/dsh 各有自己的环，剩下的都在这里。
+ * 它们没有会话/模型数据，环上只有两样东西：
+ *   · 金额与弧长 —— 来自 CC Switch 账本按 app_type 的今日花费
+ *   · 颜色 —— 近 24h 有请求记录（账本里 status_code 样本）→ 绿，否则灰
+ * 默认全部隐藏，在设置页按需勾选；枚举对齐 CC Switch 的 as_str()，
+ * 以后它新增 app 时在这里补一行即可（config.js 的 RING_KEYS 同步加）。
+ */
+const CC_APP_RINGS = {
+  gemini: { vendor: 'gemini', label: 'Gemini', logo: 'gemini.svg' },
+  grokbuild: { vendor: 'grokbuild', label: 'Grok Build', logo: 'grok.svg' },
+  opencode: { vendor: 'opencode', label: 'OpenCode', logo: 'opencode.png' },
+  openclaw: { vendor: 'openclaw', label: 'OpenClaw', logo: 'openclaw.png' },
+  hermes: { vendor: 'hermes', label: 'Hermes', logo: 'hermes.png' },
+  pi: { vendor: 'pi', label: 'Pi', logo: 'pi.png' },
+  mcode: { vendor: 'mcode', label: 'MiniMax Code', logo: 'minimax.svg' },
+  kimi: { vendor: 'kimi', label: 'Kimi Code', logo: 'kimi.svg' },
+  agy: { vendor: 'agy', label: 'Antigravity', logo: 'antigravity.svg' },
+  omp: { vendor: 'omp', label: 'Oh My Pi', logo: null },
+};
+
+/*
+ * 全部可展示圆环的元数据（键集与 config.js 的 RING_KEYS 一致）。
+ * kind 区分取数路径：source 走 bySource（会话采集），app 走账本 byApp。
+ */
+const RING_DEFS = {
+  ...Object.fromEntries(Object.entries(SOURCE_VENDOR).map(([k, v]) => [k, { ...v, kind: 'source' }])),
+  ...Object.fromEntries(Object.entries(CC_APP_RINGS).map(([k, v]) => [k, { ...v, kind: 'app' }])),
+};
+
+/**
+ * 当前展示的圆环集合与顺序（配置 ringLayout，设置页可改）。
+ * 默认值 = 旧行为的三个环；配置未到达前先按它画，配置到了再重排。
+ */
+let RING_LAYOUT = ['codex', 'claude', 'dsh'];
+
 function sourceMeterItems(summary) {
   const bySrc = summary.bySource || {};
   // 今日花费按 app_type 分组：{ claude: {usd,requests}, codex: {...}, ... }
@@ -769,7 +813,59 @@ function sourceMeterItems(summary) {
   const availability = summary.availability || null;
   const items = [];
 
-  for (const [key, meta] of Object.entries(SOURCE_VENDOR)) {
+  /*
+   * 按 RING_LAYOUT 的顺序渲染（设置页可勾选与排序），不按活跃度重排 ——
+   * 位置固定，用户才能形成肌肉记忆，一眼找到要看的那个。
+   * 状态已经用颜色区分，不需要靠排序来突出。
+   */
+  for (const key of RING_LAYOUT) {
+    const def = RING_DEFS[key];
+    if (!def) continue; // 未知键（配置比程序旧）直接跳过
+
+    if (def.kind === 'app') {
+      /*
+       * CC Switch app_type 环：没有会话采集，只有账本。
+       * 「可用」= 近 24h 账本里有它的请求记录（含今日花费里的请求），
+       * 没有记录的 app 环显示灰色「无调用」—— 与 source 环的语义一致。
+       */
+      const appCost = byApp[key];
+      const todayUsd = appCost && typeof appCost.usd === 'number' ? appCost.usd : null;
+      let todayCny =
+        appCost && typeof appCost.cny === 'number' ? appCost.cny : todayUsd != null ? todayUsd / 5 : null;
+      // 与 source 环同一口径：账本能读而今天没有请求 → ￥0.00（读不到才是「—」）
+      if (todayCny == null && summary.todayCost && summary.todayCost.ok) {
+        todayCny = 0;
+      }
+
+      const avail = availability && availability.ok ? availability.byApp[key] : null;
+      const MIN_SAMPLE = 3;
+      const hasAvail = avail && avail.requests >= MIN_SAMPLE && avail.availability != null;
+      const degraded = hasAvail && avail.availability < 1;
+      const hasTraffic =
+        (appCost && (appCost.requests || 0) > 0) || (avail && (avail.requests || 0) > 0);
+
+      items.push({
+        vendor: def.vendor,
+        label: def.label,
+        logo: def.logo,
+        hitCount: hasTraffic ? 1 : 0,
+        sessionCount: 0,
+        todayUsd,
+        todayCny,
+        spendLabel: null,
+        spendTip: null,
+        key: def.label,
+        providerLabel: def.label,
+        availability: hasAvail ? avail.availability : null,
+        availRequests: avail ? avail.requests : 0,
+        availErrors: avail ? avail.errors : 0,
+        avgLatencyMs: avail ? avail.avgLatencyMs : null,
+        p95LatencyMs: avail ? avail.p95LatencyMs : null,
+        degraded,
+      });
+      continue;
+    }
+
     const src = bySrc[key];
     if (!src || src.error) continue;
 
@@ -786,6 +882,17 @@ function sourceMeterItems(summary) {
     // 人民币值（界面显示用）；ccswitch 已算好，取不到时按 1:5 兜底
     let todayCny =
       appCost && typeof appCost.cny === 'number' ? appCost.cny : todayUsd != null ? todayUsd / 5 : null;
+
+    /*
+     * 账本能读、但该 app 今天没有请求 → 花费就是 0，不是"未知"。
+     * 之前显示破折号「—」，看起来像渲染失败；0 元是账本的真实结论
+     * （GROUP BY 只返回有请求的 app，缺席 = 今天没花）。
+     * 账本整个读不到（todayCost.ok=false）才是真正的未知，仍显示「—」，
+     * 悬停提示里会给原因。DSH 不进账本，走下面自己的兜底。
+     */
+    if (key !== 'dsh' && todayCny == null && summary.todayCost && summary.todayCost.ok) {
+      todayCny = 0;
+    }
 
     /*
      * DSH 的金额显示（2026-10-25 用户决定）：**与 Claude / Codex 同一形态** ——
@@ -808,8 +915,18 @@ function sourceMeterItems(summary) {
      */
     const dsSym = dsOk ? currencySymbol(dsBal.currency) : '';
     const dsToday = dsOk && typeof dsBal.todayUsage === 'number' ? dsBal.todayUsage : null;
-    const dsTodayIsCny = dsToday != null && String(dsBal.currency || 'CNY').toUpperCase() === 'CNY';
-    if (key === 'dsh' && dsTodayIsCny) todayCny = dsToday;
+    /*
+     * DSH 没打开（账本没今天的记录 / 压根读不到账本）→ 金额标签显示 ￥0.00，
+     * 不再退回「余额 ￥x」占位 —— 侧置竖排宽度有限，"余额 ￥3.02" 会被裁成
+     * 只剩"余额"两个字（用户反馈）。余额仍在悬停提示（spendTip）里。
+     * 例外：账本可读且本币不是 CNY 时今日值进不了 todayCny（标签写死 ￥，
+     * 会把美元标成人民币），仍按「今日/余额 $…」显示。
+     */
+    const dsCnyAccount =
+      key === 'dsh' && (!dsOk || String(dsBal.currency || 'CNY').toUpperCase() === 'CNY');
+    if (key === 'dsh' && dsCnyAccount) {
+      todayCny = dsToday != null ? dsToday : 0;
+    }
 
     const spendLabel = !dsOk
       ? null
@@ -849,9 +966,9 @@ function sourceMeterItems(summary) {
     const degraded = hasAvail && avail.availability < 1;
 
     items.push({
-      vendor: meta.vendor,
-      label: meta.label,
-      logo: meta.logo,
+      vendor: def.vendor,
+      label: def.label,
+      logo: def.logo,
       // 传 1 表示"有可用读数"，让 markHtml 的颜色判定给出绿而不是灰
       hitCount: usable ? 1 : 0,
       sessionCount: src.sessionCount || 0,
@@ -859,8 +976,8 @@ function sourceMeterItems(summary) {
       todayCny,
       spendLabel,
       spendTip,
-      key: meta.label,
-      providerLabel: meta.label,
+      key: def.label,
+      providerLabel: def.label,
       // 可用性附加信息（供 mark 底色与悬停提示使用）
       availability: hasAvail ? avail.availability : null,
       availRequests: avail ? avail.requests : 0,
@@ -877,9 +994,8 @@ function renderMarks(summary) {
   const el = $('marks');
   const items = sourceMeterItems(summary);
 
-  // 顺序固定为 SOURCE_VENDOR 的键序（Codex → Claude → DeepSeek），
+  // 顺序 = RING_LAYOUT（设置页「悬浮条圆环」里勾选并排序的结果），
   // 不按活跃度重排 —— 位置固定，用户才能形成肌肉记忆，一眼找到要看的那个。
-  // 状态已经用颜色区分，不需要靠排序来突出。
 
   let html = items
     .map((r) => markHtml(r, { compact: true, todayUsd: r.todayUsd, todayCny: r.todayCny }))
@@ -910,6 +1026,16 @@ function renderMarks(summary) {
   else if (known.length > 0 && known.every((s) => s === 'healthy')) barState = 'healthy';
   document.body.dataset.avail = barState;
 
+  /*
+   * 胶囊流光（2026-10-27 用户要求）：金额数据健康度绕边流动。
+   *   任一可见环没拿到正确金额（显示「—」）→ 红黑流动；
+   *   全部拿到 → 黑绿流动；启动首帧 items 为空 → 不标注（流光不出现，不预判）。
+   * dsh 非人民币账户显示「余额 $x」（spendLabel）也算拿到了金额。
+   * 账本整体读不到时 claude/codex/app 环全部为 null → 自动落到 bad，无需单列。
+   */
+  const flowBad = items.some((r) => r.todayCny == null && !r.spendLabel);
+  document.body.dataset.flow = items.length ? (flowBad ? 'bad' : 'ok') : '';
+
   // 回报内容宽度（环数变化与 hover 态都会影响栏宽）
   measureBar();
 }
@@ -925,7 +1051,17 @@ function renderMarks(summary) {
  * 量到「环 + 统计 + 按钮」，两个状态各自贴合。
  */
 function measureBar() {
-  if (verticalLayout || !window.hud || !window.hud.measure) return;
+  if (!window.hud || !window.hud.measure) return;
+  /*
+   * 竖排：回报的不是宽度而是**收起态竖条高度**——主进程用它在 dockRect/
+   * setExpanded 里动态定竖条长度（旧实现写死 SIDE_RUN=130，环多了被裁掉）。
+   * 竖排悬停高度不经这里走（setHovering 直接传 verticalHoverHeight()）。
+   */
+  if (verticalLayout) {
+    const h = verticalRunHeight();
+    if (h > 0) window.hud.measure(h, document.body.classList.contains('hovering') || panelOpen);
+    return;
+  }
   /*
    * 拖动中不测量：拖动时窗口尺寸被冻结，主进程也不会按测量值重排；
    * 而横↔竖翻转的瞬间窗口先变窄、body.vertical 还没到（它走 IPC），
@@ -1144,6 +1280,8 @@ function showError(msg) {
   el.textContent = '采集失败：' + msg + (recoverable ? '（将自动重试）' : '');
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 6000);
+  // 采集失败期间拿不到新金额：流光转红（下次成功渲染会按数据自动纠正）
+  document.body.dataset.flow = 'bad';
 }
 
 /*
@@ -1219,17 +1357,46 @@ let drag = null;
  * 悬停：只让胶囊"活起来"——露出统计与按钮（并让环靠左让位）。
  * 不再自动展开面板，避免鼠标扫过就弹出一大块内容（用户明确要求）。
  */
-/** 竖排时悬停要加高窗口的高度。
- *  悬停内容只有「三环 + 金额」（按钮组已移除）：每个 mark 约 43px
- *  （环 30 + 金额 10 + 间距 3），3 个 = 129 + 环间 gap 20 + bar 上下
- *  padding 16 + 边框 2 ≈ 167。取 190 留呼吸空间。 */
-const VERTICAL_HOVER_H = 190;
 /** 竖条的厚度（与 CSS 的 --side-thickness / 主进程 SIDE_THICKNESS 一致）。 */
 const SIDE_THICKNESS = 52;
+
+/**
+ * 竖排时的两个高度都随环数走（主进程 SIDE_RUN=130 只够 3 个环，环多了会被裁）。
+ *
+ * 收起态：上下 padding 8×2 + 边框 1×2 + n×环(30) + (n-1)×间距(10) = 40n + 8。
+ * 悬停态：每个 mark 再露出金额行（10px 字 + 3px 间距）→ 40n + 8 + 13n，
+ * 外加一点呼吸空间（旧常量 190 = 3 环实算 167 + 23，这里保持同裕量）。
+ * 数字必须与 styles.css 的 body.vertical .bar（padding 8 / gap 10 / gap 3）同步改。
+ */
+function verticalMarkCount() {
+  return document.querySelectorAll('#marks .mark').length || 3;
+}
+function verticalRunHeight() {
+  return 40 * verticalMarkCount() + 8;
+}
+function verticalHoverHeight() {
+  const waH = (window.screen && window.screen.availHeight) || 680;
+  return Math.min(waH - 16, Math.round(53 * verticalMarkCount() + 30));
+}
+
+/**
+ * 关闭卡片后的" settle 窗口"：这段时间内忽略 mouseenter 的加宽请求。
+ *
+ * 为什么需要：点 ✕（或再点胶囊）收起时，主进程 setBounds 把窗口从卡片尺寸
+ * 收拢成胶囊，几何一变 Chromium 会重算光标下的元素并**合成 mouseenter**——
+ * 实测轨迹（真光标采样）：窗口 500 → 135（收起态，仅 1 帧）→ 264（悬停加宽）。
+ * 用户看到的就是"关掉了胶囊却又一瞬间展开"，环多了以后悬停宽度 ≈ 卡片宽度，
+ * 更像"关闭没生效"。
+ *
+ * 只压 true（加宽）：真正的移出（mouseleave → false）不受影响，几何抖动
+ * 平息后光标若真在胶囊上，用户轻微移出再移回即可恢复悬停态。
+ */
+let closeSettleUntil = 0;
 
 function setHovering(next) {
   // 拖动中不响应 hover：主进程此时也不发 hud:hover，这里是 DOM mouseenter 的兜底
   if (drag && drag.armed) return;
+  if (next && Date.now() < closeSettleUntil) return;
   /*
    * 展开态（panelOpen）期间**完全不响应 hover** ——
    * 卡片是用 ☰ 点开的，展开后就应该整体维持展开：按钮保持可见（否则
@@ -1254,7 +1421,7 @@ function setHovering(next) {
   if (verticalLayout && window.hud) {
     if (next) {
       window.hud
-        .expand(true, SIDE_THICKNESS, VERTICAL_HOVER_H, true)
+        .expand(true, SIDE_THICKNESS, verticalHoverHeight(), true)
         .then(() => document.body.classList.add('hovering'))
         .catch(() => document.body.classList.add('hovering'));
     } else {
@@ -1278,6 +1445,7 @@ function wantExpand(next) {
   document.body.classList.toggle('hovering', !!next);
   // 面板打开时给 body 打标记：CSS 据此让竖条只占内容高（不撑满 664）
   document.body.classList.toggle('panel-open', !!next);
+  if (next) clearPinnedBarWidth();
   panelOpen = !!next;
 
   if (next) {
@@ -1309,10 +1477,57 @@ function wantExpand(next) {
   }
 
   panel.classList.remove('open');
+  // 立刻把胶囊钉在收起宽上：panel-open 已摘、窗口还要淡出 180ms 才收拢，
+  // 不钉的话 .bar 退回 width:auto 铺满卡片宽的窗口（见 pinBarToCollapsedWidth 注释）
+  pinBarToCollapsedWidth();
   expandTimer = setTimeout(() => {
-    measureBar();
+    /*
+     * 先量后收，顺序不能反。
+     *
+     * measureBar() 只是把测量排队到下一帧（rAF），而 expand(false,0) 是立刻
+     * 发出的 —— 主进程处理 expand 时 contentWidth 还停在展开期记下的加宽值
+     * （= 卡片宽），窗口就会先按"卡片宽"收一帧，等下一帧测量到了才缩回
+     * 胶囊宽，肉眼可见地闪一下（用户反馈："关闭后胶囊一瞬间和卡片一样宽"）。
+     *
+     * 这里改为同步量出收起态宽度并把 measure IPC 发在 expand 之前：
+     * 同一渲染进程的 IPC 保序，主进程先记账 contentWidth=胶囊宽，再收窗口
+     * 就一步到位。measureBarNeed 是同步的（内部临时关过渡），量的是终值。
+     * 竖排不用这套路（宽度是固定的 SIDE_THICKNESS，measureBar 在竖排本就跳过）。
+     */
+    if (!drag && !verticalLayout) {
+      const need = measureBarNeed();
+      if (need && window.hud && window.hud.measure) window.hud.measure(need, false);
+    }
     window.hud.expand(false, 0);
+    // 收拢几何会合成一次 mouseenter（见 closeSettleUntil 注释），短窗内不许它加宽
+    closeSettleUntil = Date.now() + 300;
+    // 内联宽度在窗口收拢后清除（一帧余量）：此时窗口=收起宽，width:auto
+    // 与钉住值相同，清除不会有任何可见变化
+    setTimeout(clearPinnedBarWidth, 80);
   }, FADE_MS);
+}
+
+/**
+ * 关闭卡片期间把胶囊宽度**钉在收起态内容宽**上。
+ *
+ * 根因（2026-10-27，真光标 + DOM 采样确认）：点 ✕ 后 panel-open 先摘、
+ * 窗口要等 FADE_MS 淡出才收拢，这 180ms 里 .bar 退回 width:auto —— 而
+ * 窗口还是卡片宽，胶囊就铺满整个窗口（用户看到的"一瞬间展开和卡片一样宽"）。
+ * 不能用 fit-content 兜：收起态的 .marks 是绝对定位（悬停态才回文档流），
+ * fit-content 量不到它，会把胶囊底板缩成 18px 的一条。
+ * 所以用内联样式显式钉宽 + margin auto 居中，等窗口收拢后清除。
+ */
+function pinBarToCollapsedWidth() {
+  if (verticalLayout) return; // 竖条宽度由 CSS 锁死，无此问题
+  const need = measureBarNeed(); // hovering 已摘 → 收起态内容宽
+  if (!need) return;
+  bar.style.width = need + 'px';
+  bar.style.margin = '0 auto';
+}
+
+function clearPinnedBarWidth() {
+  if (bar.style.width) bar.style.width = '';
+  if (bar.style.margin) bar.style.margin = '';
 }
 
 /*
@@ -1384,6 +1599,7 @@ function collapseForDrag() {
   panel.classList.remove('open');
   document.body.classList.remove('panel-open');
   document.body.classList.remove('hovering');
+  clearPinnedBarWidth();
   panelOpen = false;
   /*
    * 这里不再重测宽度：收起态宽度由主进程的 collapsedWidth 记着
@@ -1569,7 +1785,7 @@ if (window.hud && window.hud.onHover) {
 // 启动先拉一次预算（可能在首帧数据到达之前/之后，都无妨：下次渲染就生效）
 loadBudget();
 
-// 设置保存后立即刷新预算，不用等重启
+// 设置保存后立即刷新预算与圆环布局，不用等重启
 if (window.hud && window.hud.onConfigChanged) {
   window.hud.onConfigChanged((cfg) => {
     const n = Number(cfg && cfg.dailyBudgetCny);
@@ -1578,6 +1794,14 @@ if (window.hud && window.hud.onConfigChanged) {
     } else {
       DAILY_BUDGET_CNY = 0; // 0 = 禁用比例弧
     }
+    // 圆环集合/顺序变了要立刻重画（主进程随后也会推新数据，但布局是纯展示层状态）
+    let ringsChanged = false;
+    if (Array.isArray(cfg && cfg.ringLayout) && cfg.ringLayout.length) {
+      const next = cfg.ringLayout.filter((k) => RING_DEFS[k]);
+      ringsChanged = next.join(',') !== RING_LAYOUT.join(',');
+      RING_LAYOUT = next;
+    }
+    if (ringsChanged && currentSummary) render(currentSummary);
   });
 }
 

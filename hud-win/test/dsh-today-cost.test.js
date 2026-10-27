@@ -41,13 +41,17 @@ test('DSH 环金额取 todayUsage（今日已用），不再取余额当主显�
 });
 
 test('DSH 的今日值要喂进统一的花费通道（环弧与￥标签共用）', () => {
-  // 环弧与 ¥ 标签读的是 todayCny，DSH 不进 CC Switch 账本，只能显式注入
-  assert.match(RENDERER, /if \(key === 'dsh' && dsTodayIsCny\) todayCny = dsToday;/, 'DSH 今日花费必须注入 todayCny');
+  // 环弧与 ¥ 标签读的是 todayCny，DSH 不进 CC Switch 账本，只能显式注入。
+  // 2026-10-26 起：没打开 DSH（todayUsage=null）也注入 0 —— 侧置竖排宽度有限，
+  // 「余额 ￥x」占位会被裁成只剩"余额"两个字（见 close-flash-and-zero-cost.test.js）。
+  assert.match(RENDERER, /if \(key === 'dsh' && dsCnyAccount\) \{/, 'DSH 今日花费必须注入 todayCny');
+  assert.match(RENDERER, /todayCny = dsToday != null \? dsToday : 0;/, '没打开时注入 0，不再退回余额标签');
   assert.match(RENDERER, /let todayCny =/, 'todayCny 必须是 let（否则无法注入）');
-  // 币种门控：非 CNY 不能塞进写死 ￥ 的那条路径
+  // 币种门控：人民币账户（或账本读不到）才走 ￥0.00 路径；
+  // USD 账户仍走「余额 $…」，不许把美元数字标成￥
   assert.match(
     RENDERER,
-    /const dsTodayIsCny = dsToday != null && String\(dsBal\.currency \|\| 'CNY'\)\.toUpperCase\(\) === 'CNY'/,
+    /const dsCnyAccount =\s*key === 'dsh' && \(!dsOk \|\| String\(dsBal\.currency \|\| 'CNY'\)\.toUpperCase\(\) === 'CNY'\)/,
     '必须有 CNY 门控：USD 账户走「余额 $…」，不许把美元数字标成￥'
   );
 });

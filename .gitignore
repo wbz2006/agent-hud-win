@@ -4,6 +4,9 @@ node_modules/
 # 打包产物
 build/
 dist/
+# EBUSY 备选输出目录（build2/ build3/ …，与 hud-win/.gitignore 同款规则）
+build[0-9]*/
+build-*/
 
 # 运行时生成（含个人路径与 Token）
 config.json

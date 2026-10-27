@@ -125,6 +125,13 @@ let dragging = false;
 const SIDE_THICKNESS = 52;
 const SIDE_RUN = 130;
 /**
+ * 竖条当前长度（沿边轴）。**动态值**：渲染层每次采集都会按环数回报
+ * （收起态 = 40n + 8，见 renderer 的 verticalRunHeight），竖排 measure 分支
+ * 更新它并就地 applyDock。SIDE_RUN 只作为启动初值/兜底 —— 写死 130 时
+ * 3 个环刚好，用户在设置里多勾几个环就会被裁掉（2026-10-27 用户反馈）。
+ */
+let sideRun = SIDE_RUN;
+/**
  * 侧边停靠展开时窗口的最小宽度：竖条厚 52 + 缝隙 8 + 面板最小可读宽 420 + 右边距 8。
  * 小于这个值面板会被压窄、文字挤成单列并冒出横向滚动条。
  */
@@ -146,7 +153,7 @@ function dockRect(dock, bounds, currentWidth) {
       barW: clampWidth(currentWidth),
       barH: BAR.height,
       sideW: SIDE_THICKNESS,
-      runH: SIDE_RUN,
+      runH: sideRun,
     },
     dockOffsetOf(dock)
   );
@@ -182,7 +189,7 @@ function barDims() {
     barW: clampWidth(contentWidth),
     barH: BAR.height,
     sideW: SIDE_THICKNESS,
-    runH: SIDE_RUN,
+    runH: sideRun,
   };
 }
 
@@ -313,12 +320,15 @@ function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
   if (vertical) {
     if (hoverGrow) {
       /*
-       * 竖排悬停：宽度不变（仍为竖条厚 52），高度加到容纳按钮。
-       * wantedPanelHeight 此时传的是「悬停态总高」（如 185）。
+       * 竖排悬停：宽度不变（仍为竖条厚 52），高度加到容纳金额行。
+       * wantedPanelHeight 此时传的是「悬停态总高」（renderer 按
+       * verticalHoverHeight() 报，随环数走）；下限用动态 sideRun，
+       * 上限夹到工作区内，环多时也不许撑出屏幕。
        */
-      const h = Math.max(SIDE_RUN, Math.ceil(Number(wantedPanelHeight) || SIDE_RUN));
-      const wa = screen.getPrimaryDisplay().workArea;
-      const y = Math.max(wa.y, Math.min(wa.y + wa.height - h, Math.round(b.y + b.height / 2 - h / 2)));
+      const wa0 = screen.getPrimaryDisplay().workArea;
+      const want = Math.ceil(Number(wantedPanelHeight) || sideRun);
+      const h = Math.max(sideRun, Math.min(wa0.height, want));
+      const y = Math.max(wa0.y, Math.min(wa0.y + wa0.height - h, Math.round(b.y + b.height / 2 - h / 2)));
       win.setBounds({ x: b.x, y, width: SIDE_THICKNESS, height: h });
       return;
     }
@@ -340,7 +350,7 @@ function setExpanded(next, wantedSize, wantedPanelHeight, hoverGrow) {
       const w = Math.max(SIDE_THICKNESS, Math.min(EXPANDED_MAX, Math.ceil(want)), SIDE_PANEL_MIN_WIDTH);
       const wa = screen.getPrimaryDisplay().workArea;
       const panelH = Math.ceil(Number(wantedPanelHeight) || 0);
-      const h = Math.max(SIDE_RUN, Math.min(wa.height, panelH));
+      const h = Math.max(sideRun, Math.min(wa.height, panelH));
       const y = Math.max(wa.y, Math.min(wa.y + wa.height - h, Math.round(b.y + b.height / 2 - h / 2)));
       win.setBounds({ x: b.x, y, width: w, height: h });
       return;
@@ -485,7 +495,8 @@ function createSettingsWindow() {
   const cfg = config.load();
   settingsWin = new BrowserWindow({
     width: 460,
-    height: 560,
+    // 卡片化改版后内容变高（卡片间隙 + 环列表），560 需要滚两屏才看完
+    height: 620,
     minWidth: 420,
     minHeight: 420,
     resizable: true,
@@ -850,19 +861,32 @@ ipcMain.handle('hud:get-layout', () => {
 });
 
 /**
- * 渲染层回报悬浮条内容宽度（仅横排使用）。
+ * 渲染层回报悬浮条内容宽度（横排）/ 竖条收起态高度（竖排）。
  * 宽度变化超过 1px 才重新定位，避免每次渲染都抖动。
  *
  * 第二个参数 hovering 表示这条测量值来自悬停态（露出统计与按钮的加宽值）：
  * 只有非悬停的测量才写 collapsedWidth（收起态宽度），拖动落回时用它。
  *
- * 竖排必须直接忽略：竖条的宽高由 SIDE_THICKNESS / SIDE_RUN 固定，
- * 一旦 applyDock() 被触发就会把窗口强制收回收起尺寸 ——
- * 实测症状是悬停展开时宽 78、高 195 反复横跳，面板根本展不开。
+ * 竖排分支：width 是竖条**收起态高度**（按环数），写进动态 sideRun 并就地
+ * 重排；悬停加高不在这里（setHovering 直接发 expand + verticalHoverHeight）。
+ * 旧实现竖排直接忽略测量 —— 那时竖条长度写死 SIDE_RUN，环多了会被裁掉。
  */
 ipcMain.handle('hud:measure', (_e, width, hovering) => {
   const layout = layoutOf();
-  if (layout.vertical) return SIDE_THICKNESS;
+  if (layout.vertical) {
+    /*
+     * 竖排：渲染层回报的是**收起态竖条高度**（按环数算，见 renderer 的
+     * verticalRunHeight）。更新 sideRun 并就地重排 —— 设置里增减圆环后
+     * 竖条长度要立刻跟上，而不是等下一次停靠事件。
+     */
+    const wa = currentWorkArea();
+    const next = Math.max(64, Math.min(wa.height, Math.ceil(Number(width) || SIDE_RUN)));
+    if (Math.abs(next - sideRun) > 1) {
+      sideRun = next;
+      if (!expanded && !dragging) applyDock();
+    }
+    return SIDE_THICKNESS;
+  }
   // 拖动中不接测量值：翻转朝向的瞬间渲染层还按横排量，数值会偏小
   if (dragging) return contentWidth;
 
@@ -950,6 +974,26 @@ ipcMain.handle('hud:expand', (_e, next, wantedHeight, wantedPanelHeight, hoverGr
  */
 ipcMain.handle('hud:get-config', () => {
   return { ...config.load(), sourceCounts: lastSourceCounts };
+});
+
+/**
+ * 各环的数据监测状态快照（设置页「悬浮条圆环」列表展示用）。
+ *
+ * 两类环的数据来源不同，状态口径也不同：
+ *   · 会话源（claude/codex/dsh）：本地会话采集，看 sourceCounts；
+ *   · CC Switch app 环（gemini/kimi/opencode…）：无本地会话，数据全部来自
+ *     CC Switch 账本按 app_type 的聚合 —— 看今日请求次数与金额。
+ * 账本读不到时给 reason，设置页明确显示「账本不可用」而不是装作没数据。
+ */
+ipcMain.handle('hud:get-data-stats', () => {
+  const tc = lastSummary && lastSummary.todayCost;
+  return {
+    sourceCounts: lastSourceCounts,
+    todayCostOk: !!(tc && tc.ok),
+    todayCostReason: (tc && tc.ok === false && tc.reason) || null,
+    unit: (tc && tc.ok && tc.unit) || '￥',
+    byApp: (tc && tc.ok && tc.byApp) || {},
+  };
 });
 
 ipcMain.handle('hud:quit', () => {

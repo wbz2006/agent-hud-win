@@ -274,8 +274,10 @@ test('停靠边决定朝向与展开方向，量宽度时忽略竖排', () => {
   assert.match(MAIN_CODE, /function layoutOf\(cfg\)/);
   assert.match(MAIN_CODE, /config\.normalizeDock\(conf\.dock\)/);
   assert.match(MAIN_CODE, /anchor: dragGeo\.anchorOf\(dock\)/);
-  // 竖排下 hud:measure 直接返回条厚，避免把竖条按横条宽度摆
-  assert.match(MAIN_CODE, /if \(layout\.vertical\) return SIDE_THICKNESS;/);
+  // 竖排下 hud:measure 先进竖排分支（更新动态 sideRun）并返回条厚，
+  // 不把竖条高度当横条宽度摆（旧写法 `return SIDE_THICKNESS;` 已并入分支体）
+  assert.match(MAIN_CODE, /if \(layout\.vertical\) \{/);
+  assert.match(MAIN_CODE, /return SIDE_THICKNESS;/);
 });
 
 test('拖动期间冻结 hover / 测量 / 展开，防止胶囊抖动', () => {
@@ -411,6 +413,9 @@ test('拖动中的吸附边判定用光标位置（水平胶囊贴边时中心�
 });
 
 test('卡片展开时胶囊保持紧凑（不铺满窗口宽度）', () => {
+  // 注意只能挂在 panel-open 上：收起态 .marks 是绝对定位，无条件 fit-content
+  // 量不到它会把胶囊底板缩成一条。关闭淡出期的宽度由 renderer 内联钉宽兜住
+  // （见 close-flash-and-zero-cost.test.js 的 pinBarToCollapsedWidth 断言）。
   assert.match(
     CSS_CODE,
     /body\.panel-open:not\(\.vertical\) \.bar \{\s*width: fit-content;\s*margin: 0 auto;/,

@@ -88,6 +88,20 @@ const DEFAULTS = {
   /** 各数据源开关。 */
   enabledSources: { claude: true, codex: true, dsh: true },
   /**
+   * 悬浮条圆环的显示集合与顺序（数组序 = 渲染序，从左到右 / 从上到下）。
+   *
+   * 键分两类：
+   *   · 数据源环（有会话采集）：claude / codex / dsh
+   *   · CC Switch app_type 环（只有账本花费与可用性，无会话）：
+   *     gemini / grokbuild / opencode / openclaw / hermes / pi / mcode / kimi / agy / omp
+   *     （枚举与 CC Switch 的 AppType::as_str() 对齐，claude-desktop 在账本层
+   *      已归一化进 claude，不单列。）
+   *
+   * 不在数组里的键 = 隐藏。设置页「悬浮条圆环」可勾选与排序；新增 app 环
+   * 默认不展示（用户按需勾选），默认值保持旧行为的三个环。
+   */
+  ringLayout: ['codex', 'claude', 'dsh'],
+  /**
    * 中转站（CC Switch）金额的计价方式：
    *   'internal' 默认，÷5，与 CC Switch 界面显示的数字一致
    *   'real'     按真实汇率 ¥7.2/$ 折算
@@ -125,6 +139,43 @@ let cache = null;
 const DOCKS = ['top', 'left', 'right'];
 
 /**
+ * ringLayout 的合法键全集（与 CC Switch AppType 枚举 + 本机数据源对齐）。
+ * 归一化时用它过滤未知键、去重；渲染端 RING_DEFS 的键必须与此一致。
+ */
+const RING_KEYS = [
+  'claude',
+  'codex',
+  'dsh',
+  'gemini',
+  'grokbuild',
+  'opencode',
+  'openclaw',
+  'hermes',
+  'pi',
+  'mcode',
+  'kimi',
+  'agy',
+  'omp',
+];
+
+/**
+ * 归一化 ringLayout：只留合法键、去重、保持用户给的顺序。
+ * 不是数组（或全空）时回退默认三环 —— 配置损坏不能把整个胶囊清没。
+ */
+function normalizeRingLayout(v) {
+  if (!Array.isArray(v)) return [...DEFAULTS.ringLayout];
+  const seen = new Set();
+  const out = [];
+  for (const k of v) {
+    if (RING_KEYS.includes(k) && !seen.has(k)) {
+      seen.add(k);
+      out.push(k);
+    }
+  }
+  return out.length ? out : [...DEFAULTS.ringLayout];
+}
+
+/**
  * 归一化停靠值：旧配置里的 top-left / top-right / free 一律回到 top。
  * 不收口的话，设置页 select 没有对应 option 会显示空白，窗口也会摆错位置。
  */
@@ -158,6 +209,7 @@ function load() {
       dock: normalizeDock(raw.dock),
       dockPos: normalizeDockPos(raw.dockPos),
       enabledSources: { ...DEFAULTS.enabledSources, ...(raw.enabledSources || {}) },
+      ringLayout: normalizeRingLayout(raw.ringLayout),
       relay: { ...DEFAULTS.relay, ...(raw.relay || {}) },
     };
   } catch {
@@ -165,6 +217,7 @@ function load() {
       ...DEFAULTS,
       dockPos: {},
       enabledSources: { ...DEFAULTS.enabledSources },
+      ringLayout: [...DEFAULTS.ringLayout],
       relay: { ...DEFAULTS.relay },
     };
   }
@@ -185,6 +238,7 @@ function save(patch) {
   if ('dock' in merged) merged.dock = normalizeDock(merged.dock);
   merged.dockPos = normalizeDockPos(merged.dockPos);
   merged.enabledSources = { ...DEFAULTS.enabledSources, ...(merged.enabledSources || {}) };
+  merged.ringLayout = normalizeRingLayout(merged.ringLayout);
   merged.relay = { ...DEFAULTS.relay, ...(merged.relay || {}) };
 
   const tmp = CONFIG_FILE + '.tmp';
@@ -208,4 +262,15 @@ function current() {
   return load();
 }
 
-module.exports = { load, save, current, DEFAULTS, CONFIG_FILE, DOCKS, normalizeDock, normalizeDockPos };
+module.exports = {
+  load,
+  save,
+  current,
+  DEFAULTS,
+  CONFIG_FILE,
+  DOCKS,
+  RING_KEYS,
+  normalizeDock,
+  normalizeDockPos,
+  normalizeRingLayout,
+};

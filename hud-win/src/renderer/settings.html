@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+        content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
   <title>Agent HUD 设置</title>
   <link rel="stylesheet" href="settings.css" />
 </head>
@@ -100,8 +100,16 @@
           </select>
         </div>
         <p class="hint">
-          三个环分别对应 Codex / Claude / DeepSeek。环的<strong>颜色</strong>表示该源的实时状态
-          （绿=可用、红=限流中、灰=无调用），<strong>弧长</strong>表示今日花费占预算的比例。
+          环的<strong>颜色</strong>表示该源的实时状态（绿=可用、红=限流中、灰=无调用），
+          <strong>弧长</strong>表示今日花费占预算的比例。
+        </p>
+
+        <div class="k" style="margin-top:4px">展示哪些环（勾选显示，↑↓ 排序）</div>
+        <div id="ringList" class="sources"></div>
+        <p class="hint">
+          前三个环来自会话采集（Claude / Codex / DeepSeek）；其余对应 CC Switch 支持的
+          各应用（Gemini、Kimi Code、OpenCode 等），只要 CC Switch 账本里有它们的请求记录
+          就会有今日花费与可用性数据，没记录时环显示灰色。每行右侧是该环当前的监测状态。
         </p>
       </section>
 
@@ -176,7 +184,12 @@
       <!-- 5. 监控数据源 -->
       <section class="sect">
         <h2>监控数据源</h2>
-        <p class="hint">取消勾选后，该来源不再采集，也不计入「全部」统计。</p>
+        <p class="hint">
+          这里只列<strong>会话采集源</strong>（本地有会话文件可采集，取消勾选即停止采集、省 CPU）。
+          其余应用（Gemini、OpenCode 等）没有本地会话可采，圆环数据全部来自 CC Switch 账本，
+          每次采集自动读取、无需开关 —— 它们的监测状态（今日请求 / 金额）直接显示在上方
+          「悬浮条圆环」的每一行里。
+        </p>
         <div id="sourceList" class="sources"></div>
       </section>
 

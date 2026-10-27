@@ -26,6 +26,30 @@ const SOURCE_LABELS = {
   dsh: 'DSH',
 };
 
+/*
+ * 全部可展示圆环（键集与 config.js 的 RING_KEYS / renderer.js 的 RING_DEFS 一致）。
+ *
+ * kind 决定状态口径（见 fillRingStats）：
+ *   source —— 会话采集源（本地有会话文件，状态 = 会话数）；
+ *   app    —— CC Switch app_type 环（无本地会话，数据全部来自账本，
+ *             状态 = 今日请求次数与金额；枚举对齐 CC Switch 的 AppType::as_str()）。
+ */
+const RING_DEFS = {
+  codex: { label: 'Codex', logo: 'codex-green.png', kind: 'source' },
+  claude: { label: 'Claude Code', logo: 'claude.png', kind: 'source' },
+  dsh: { label: 'DeepSeek', logo: 'deepseek.png', kind: 'source' },
+  gemini: { label: 'Gemini', logo: 'gemini.svg', kind: 'app' },
+  grokbuild: { label: 'Grok Build', logo: 'grok.svg', kind: 'app' },
+  opencode: { label: 'OpenCode', logo: 'opencode.png', kind: 'app' },
+  openclaw: { label: 'OpenClaw', logo: 'openclaw.png', kind: 'app' },
+  hermes: { label: 'Hermes', logo: 'hermes.png', kind: 'app' },
+  pi: { label: 'Pi', logo: 'pi.png', kind: 'app' },
+  mcode: { label: 'MiniMax Code', logo: 'minimax.svg', kind: 'app' },
+  kimi: { label: 'Kimi Code', logo: 'kimi.svg', kind: 'app' },
+  agy: { label: 'Antigravity', logo: 'antigravity.svg', kind: 'app' },
+  omp: { label: 'Oh My Pi', logo: null, kind: 'app' },
+};
+
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
@@ -73,6 +97,143 @@ function fill(cfg) {
     </label>`;
     })
     .join('');
+
+  // 圆环集合与顺序：配置里排在前面的勾选项按原序展示，其余已知环追加在
+  // 列表尾部（未勾选）。ringLayout 缺失/为空时退默认三环，与主进程归一化一致。
+  const layout =
+    Array.isArray(current.ringLayout) && current.ringLayout.length
+      ? current.ringLayout
+      : ['codex', 'claude', 'dsh'];
+  ringRows = layout
+    .filter((k) => RING_DEFS[k])
+    .map((k) => ({ key: k, on: true }));
+  for (const k of Object.keys(RING_DEFS)) {
+    if (!ringRows.some((r) => r.key === k)) ringRows.push({ key: k, on: false });
+  }
+  renderRingList();
+}
+
+/*
+ * 圆环列表的本地编辑态：顺序 = 数组序（勾选与未勾选交错，用户 ↑↓ 排的是
+ * 整个列表），保存时只把勾选的按序写进 ringLayout。
+ * 之所以存整列顺序而不只是勾选项的顺序：用户把某环拖到末位再取消勾选、
+ * 过几天重新勾上时，它还留在原来的位置，不会跳回列表头。
+ */
+let ringRows = [];
+
+/*
+ * 未启用的环默认**折叠**：13 个环全平铺会把下面的设置项挤出一屏。
+ * 展开态才允许跨勾选/未勾选重排；折叠态里 ↑↓ 只在已启用的环之间移动
+ * （显示顺序本来就只由启用的环决定），保证每一下都有可见效果。
+ */
+let ringExpanded = false;
+
+/** 重新渲染圆环列表（勾选框 + 图标 + 名称 + ↑↓ + 折叠开关）。 */
+function renderRingList() {
+  const el = $('ringList');
+  if (!el) return;
+
+  const visible = ringExpanded ? ringRows : ringRows.filter((r) => r.on);
+  const hiddenCount = ringRows.length - visible.length;
+
+  el.innerHTML = visible
+    .map((r, vi) => {
+      const def = RING_DEFS[r.key];
+      const idx = ringRows.indexOf(r); // 移动按钮以 ringRows 的真实下标交换
+      const logo = def.logo
+        ? `<img class="ring-logo" src="assets/${def.logo}" alt="" />`
+        : `<span class="ring-badge">${esc(def.label.slice(0, 1))}</span>`;
+      return `<div class="src-row ring-row${r.on ? '' : ' off'}" data-key="${esc(r.key)}">
+      <input type="checkbox" data-ring="${esc(r.key)}" ${r.on ? 'checked' : ''} title="显示 / 隐藏该圆环" />
+      ${logo}
+      <span class="src-name">${esc(def.label)}</span>
+      <span class="src-count" data-count="${esc(r.key)}"></span>
+      <button class="mini-btn" data-move="-1" data-vi="${vi}" title="上移" ${vi === 0 ? 'disabled' : ''}>↑</button>
+      <button class="mini-btn" data-move="1" data-vi="${vi}" title="下移" ${
+        vi === visible.length - 1 ? 'disabled' : ''
+      }>↓</button>
+    </div>`;
+    })
+    .join('');
+
+  // 每个环的监测状态（异步到货后回填，见 fillRingStats）
+  fillRingStats();
+
+  // 折叠开关：只有存在未启用的环时才出现
+  if (hiddenCount > 0) {
+    el.insertAdjacentHTML(
+      'beforeend',
+      `<button class="ring-more" id="ringMore">${ringExpanded ? '▴ 收起未启用的环' : `▾ 展开其余 ${hiddenCount} 个未启用的环`}</button>`
+    );
+  }
+
+  el.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+    box.addEventListener('change', () => {
+      const row = ringRows.find((r) => r.key === box.dataset.ring);
+      if (row) row.on = box.checked;
+      box.closest('.ring-row').classList.toggle('off', !box.checked);
+    });
+  });
+  el.querySelectorAll('button[data-move]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const vi = Number(btn.dataset.vi);
+      const vj = vi + Number(btn.dataset.move);
+      if (vj < 0 || vj >= visible.length) return;
+      // 在 ringRows 里交换这两行（无论对方是否勾选），保持"整列顺序"语义
+      const a = ringRows.indexOf(visible[vi]);
+      const b = ringRows.indexOf(visible[vj]);
+      [ringRows[a], ringRows[b]] = [ringRows[b], ringRows[a]];
+      renderRingList();
+    });
+  });
+  const more = $('ringMore');
+  if (more) {
+    more.addEventListener('click', () => {
+      ringExpanded = !ringExpanded;
+      renderRingList();
+    });
+  }
+}
+
+/*
+ * 每个环的数据监测状态（异步到货后按 data-count 回填）。
+ *
+ * 两类环的口径不同：
+ *   source（claude/codex/dsh）—— 本地会话采集：显示「N 个会话」；
+ *   app（gemini/kimi/…）       —— 无本地会话，数据全部来自 CC Switch 账本：
+ *     账本可用且有该 app 的记录 → 「今日 N 次 · ￥x.xx」；
+ *     账本可用但今天没有该 app  → 「今日无请求」；
+ *     账本整个读不到            → 「账本不可用」（悬停可见原因）。
+ * 由此「监控数据源」只列会话源这件事就说得通：app 环没有可开关的采集器，
+ * 它们的监测状态在这里直接可见。
+ */
+async function fillRingStats() {
+  if (!store.getDataStats) return;
+  let st;
+  try {
+    st = await store.getDataStats();
+  } catch {
+    return;
+  }
+  const counts = st.sourceCounts || {};
+  const byApp = st.byApp || {};
+  const unit = st.unit || '￥';
+  for (const key of Object.keys(RING_DEFS)) {
+    const el = document.querySelector(`#ringList .src-count[data-count="${key}"]`);
+    if (!el) continue;
+    const def = RING_DEFS[key];
+    let text = '—';
+    if (def.kind === 'source') {
+      text = key in counts ? `${counts[key]} 个会话` : '未采集';
+    } else if (byApp[key]) {
+      const a = byApp[key];
+      text = `今日 ${a.requests || 0} 次 · ${unit}${(a.cny != null ? a.cny : 0).toFixed(2)}`;
+    } else {
+      text = st.todayCostOk ? '今日无请求' : '账本不可用';
+    }
+    el.textContent = text;
+    el.title = def.kind === 'app' && st.todayCostReason ? `账本：${st.todayCostReason}` : '';
+  }
 }
 
 /** 从控件读出配置对象。 */
@@ -96,6 +257,9 @@ function read() {
       return Number.isFinite(n) && n > 0 ? n : 0;
     })(),
     enabledSources: enabled,
+    // 圆环：勾选的按列表顺序写出；全部取消勾选时存空数组，
+    // 主进程归一化会回退默认三环（不允许把胶囊清没）。
+    ringLayout: ringRows.filter((r) => r.on).map((r) => r.key),
     // DeepSeek 官方余额的 API Key（空字符串 = 未配置，UI 显示 "—"）
     deepseekApiKey: (() => {
       const el = $('deepseekApiKey');
