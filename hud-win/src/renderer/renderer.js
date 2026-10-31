@@ -226,14 +226,7 @@ function renderQuotas(summary, opts = {}) {
         const remain = 100 - w.usedPercent;
         // 剩余越少越红，阈值与积分区一致（>=50 绿 / >=20 黄 / 更低红）
         const color = remain >= 50 ? COLOR.ok : remain >= 20 ? COLOR.w : COLOR.c;
-        const winName =
-          w.windowMinutes === 300
-            ? '5 小时窗口'
-            : w.windowMinutes === 10080
-              ? '7 天窗口'
-              : w.windowMinutes
-                ? `${Math.round(w.windowMinutes / 60)} 小时窗口`
-                : '窗口';
+        const winName = quotaWindowName(w.windowMinutes);
         const resetTip = w.resetsAt
           ? `重置 ${new Date(w.resetsAt).toLocaleString('zh-CN', {
               month: '2-digit',
@@ -607,6 +600,42 @@ async function loadBudget() {
   }
 }
 
+/** 官方窗口时长 → 名称（面板额度区与圆环标签共用一套叫法）。 */
+function quotaWindowName(minutes) {
+  if (minutes === 300) return '5 小时窗口';
+  if (minutes === 10080) return '7 天窗口';
+  return minutes ? `${Math.round(minutes / 60)} 小时窗口` : '窗口';
+}
+
+/**
+ * 官方窗口的悬停提示：窗口名 + 剩余/已用 + 数据时刻 + 重置时刻。
+ * 与面板额度区同口径；resetsAt 缺失时如实说「未知」。
+ */
+function officialQuotaTip(q) {
+  const remain = Math.max(0, Math.min(100, 100 - q.usedPercent));
+  const bits = [
+    `官方${quotaWindowName(q.windowMinutes)}剩 ${Math.round(remain)}%`,
+    `已用 ${Math.round(q.usedPercent)}%`,
+  ];
+  if (q.fetchedAt) {
+    bits.push(
+      `数据 ${new Date(q.fetchedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+    );
+  }
+  bits.push(
+    q.resetsAt
+      ? `重置 ${new Date(q.resetsAt).toLocaleString('zh-CN', {
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })}`
+      : '重置时刻未知'
+  );
+  return bits.join(' · ');
+}
+
 function markHtml(r, opts) {
   const { compact, todayUsd } = opts || {};
   /*
@@ -617,6 +646,14 @@ function markHtml(r, opts) {
    * 4 美元，属于误导。换算见 ccswitch.js 的 USD_TO_CNY。
    */
   const todayCny = r.todayCny != null ? r.todayCny : todayUsd != null ? todayUsd / 5 : null;
+  /*
+   * 官方额度口径（仅 Codex 官方登录时有值，见 sourceMeterItems）：
+   *   环弧 = 最紧窗口已用比例（回到原版语义「环表达配额用了多少」），
+   *   金额标签位改显剩余百分比，颜色随剩余多少变（>=50 绿 / >=20 黄 / 更低红）。
+   * 无官方数据（中转站）时 quota 为 null，一切保持花费/预算口径。
+   */
+  const q = r.quota || null;
+  const qRemain = q ? Math.max(0, Math.min(100, 100 - q.usedPercent)) : null;
   const vendor = r.vendor || r.provider || r.model || 'unknown';
   // 数据源级别的条目自带 logo（见 SOURCE_VENDOR）；模型级别才查 VENDOR_LOGO
   const logo = r.logo || VENDOR_LOGO[vendor];
@@ -629,14 +666,21 @@ function markHtml(r, opts) {
 
   // ---- 颜色：只看该分组的实时状态（可用绿 / 无数据灰）----
   const liveLevel = r.hitCount > 0 ? 'ok' : 'idle';
-  const color = liveLevel === 'ok' ? COLOR.ok : COLOR.idle;
+  let color = liveLevel === 'ok' ? COLOR.ok : COLOR.idle;
+  // 官方额度驱动环色：剩余越少越红，阈值与面板额度区一致（>=50 绿 / >=20 黄）
+  if (q && liveLevel === 'ok') {
+    color = qRemain >= 50 ? COLOR.ok : qRemain >= 20 ? COLOR.w : COLOR.c;
+  }
   const state = liveLevel === 'ok' ? '可用' : '无调用';
 
   // ---- 进度弧填充比例 ----
   // 用人民币口径：花费(CNY)/预算(CNY)。与显示的金额同一单位，弧长才对得上。
   // 预算 <= 0（设置里留空/填 0）= 禁用比例，弧只显示状态点。
   let usedPct;
-  if (DAILY_BUDGET_CNY > 0 && todayCny != null && todayCny >= 0) {
+  if (q) {
+    // 官方窗口：弧长 = 已用比例（真实值，不做预算换算）
+    usedPct = Math.max(0, Math.min(1, q.usedPercent / 100));
+  } else if (DAILY_BUDGET_CNY > 0 && todayCny != null && todayCny >= 0) {
     usedPct = Math.max(0, Math.min(1, todayCny / DAILY_BUDGET_CNY));
   } else {
     usedPct = 0;
@@ -659,12 +703,14 @@ function markHtml(r, opts) {
   const tip = compact
     ? ''
     : `<span class="grid-meta">${esc(r.providerLabel || vendor)} · ${state}${
-        todayCny != null
-          ? ` · 今日 ￥${todayCny.toFixed(2)}`
-          : r.spendTip
-            ? ` · ${r.spendTip}`
-            : ''
-      }${r.spendTip && todayCny != null ? ` · ${r.spendTip}` : ''}</span>`;
+        q
+          ? ` · 官方剩 ${Math.round(qRemain)}%`
+          : todayCny != null
+            ? ` · 今日 ￥${todayCny.toFixed(2)}`
+            : r.spendTip
+              ? ` · ${esc(r.spendTip)}`
+              : ''
+      }${!q && r.spendTip && todayCny != null ? ` · ${esc(r.spendTip)}` : ''}</span>`;
 
   /*
    * 金额标签：跟在环的右侧（原版是百分比数字的位置）。
@@ -675,8 +721,9 @@ function markHtml(r, opts) {
    *
    * 取不到花费时显示破折号而不留空，避免看起来像是"渲染失败"。
    */
-  const costLabel =
-    todayCny != null
+  const costLabel = q
+    ? `剩 ${Math.round(qRemain)}%`
+    : todayCny != null
       ? `￥${todayCny.toFixed(2)}`
       : r.spendLabel
         ? r.spendLabel
@@ -703,13 +750,15 @@ function markHtml(r, opts) {
 
   return `<div class="mark${compact ? '' : ' grid-item'} mark--${barState}" data-state="${barState}" title="${esc(
     r.key
-  )} — ${state}${availTip}${
-    todayCny != null
-      ? `；今日 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}`
-      : r.spendTip
-        ? `；${r.spendTip}`
-        : ''
-  }${r.spendTip && todayCny != null ? `；${r.spendTip}` : ''}">
+  )} — ${state}${availTip}；${
+    q
+      ? esc(officialQuotaTip(q)) + (todayCny != null ? `；今日 ￥${todayCny.toFixed(2)}` : '')
+      : todayCny != null
+        ? `今日 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}`
+        : r.spendTip
+          ? esc(r.spendTip)
+          : ''
+  }${!q && r.spendTip && todayCny != null ? `；${esc(r.spendTip)}` : ''}">
     <div class="mark-icon">
       <!-- 不能写死 width/height="22"：容器是 --mark(30px)，SVG 只占 22 就会贴在
            左上角，而 logo 按 30 居中，两者差 4px —— 视觉上就是"图标不在环心"。
@@ -726,11 +775,13 @@ function markHtml(r, opts) {
     ${
       compact
         ? `<span class="mark-cost" title="${
-            todayCny != null
-              ? `今日使用金额 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}${r.spendTip ? `；${r.spendTip}` : ''}`
-              : r.spendTip
-                ? r.spendTip
-                : '今日使用金额（无数据）'
+            q
+              ? esc(officialQuotaTip(q))
+              : todayCny != null
+                ? `今日使用金额 ￥${todayCny.toFixed(2)} / 预算 ￥${DAILY_BUDGET_CNY}${r.spendTip ? `；${esc(r.spendTip)}` : ''}`
+                : r.spendTip
+                  ? esc(r.spendTip)
+                  : '今日使用金额（无数据）'
           }">${costLabel}</span>`
         : ''
     }
@@ -952,6 +1003,39 @@ function sourceMeterItems(summary) {
     }
 
     /*
+     * 官方登录态的百分比额度（仅 Codex 有，collectOfficialQuota 已过滤过期窗口）：
+     * 官方窗口存在时环与金额标签改说「配额」—— 环弧 = 最紧窗口已用比例，
+     * 标签 = 剩余百分比。中转站 / 无官方数据时 quota 为 null，环保持花费/预算口径。
+     */
+    let officialQuota = null;
+    if (key === 'codex' && summary.codexQuota) {
+      const cq = summary.codexQuota;
+      // 最紧窗口 = 已用比例最高的那个（剩余最少，最先撞墙）
+      const worst =
+        [cq.primary, cq.secondary].filter(Boolean).reduce(
+          (a, w) => (!a || w.usedPercent > a.usedPercent ? w : a),
+          null
+        ) || null;
+      if (worst) {
+        officialQuota = {
+          usedPercent: worst.usedPercent,
+          windowMinutes: worst.windowMinutes,
+          resetsAt: worst.resetsAt,
+          planType: cq.planType,
+          fetchedAt: cq.fetchedAt,
+        };
+      }
+    }
+
+    // 账本整个读不到 → 金额标签是横线，悬停提示里必须给出原因（30 秒后自愈的
+    // SQLite 写锁、CC Switch 未装等原因此前只写进面板，这里补齐环上的说法）
+    if (todayCny == null && !(summary.todayCost && summary.todayCost.ok)) {
+      spendTip = `账本不可用：${
+        (summary.todayCost && (summary.todayCost.reason || summary.todayCost.error)) || '未知原因'
+      }`;
+    }
+
+    /*
      * 可用性（近 24h 请求成功率）—— 来自 CC Switch 的 status_code 统计。
      *
      * 这与 limited（上游限流）是**两个不同维度**：
@@ -974,6 +1058,8 @@ function sourceMeterItems(summary) {
       sessionCount: src.sessionCount || 0,
       todayUsd,
       todayCny,
+      // 官方额度（仅 codex 可能非空）：有值时 markHtml 改用配额口径画环
+      quota: officialQuota,
       spendLabel,
       spendTip,
       key: def.label,
@@ -1759,6 +1845,9 @@ window.addEventListener('blur', () => endDrag());
  * （悬停轮询与窗口自适应会一起失效）。HUD 里本来也没有需要右键菜单的东西。
  */
 document.addEventListener('contextmenu', (e) => e.preventDefault());
+// img 原生拖拽一并禁掉（styles.css 的 -webkit-user-drag 之外的兜底）：
+// 拖动胶囊时任何元素都不能变成系统拖拽源，否则会出现"把模型图标拖到桌面"的幻影
+document.addEventListener('dragstart', (e) => e.preventDefault());
 
 /**
  * 主进程轮询光标得出的 hover 通知（唯一可信的"是否还在窗口内"依据）。

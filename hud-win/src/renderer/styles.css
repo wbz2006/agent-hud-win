@@ -55,6 +55,13 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/*
+ * img 一律禁掉原生拖拽：HTML 图片默认是拖拽源（按下拖动 → 系统拖拽幻影），
+ * 拖动胶囊时圆环里的模型 logo 会被拖出窗口、看起来像"把图标拖到桌面"。
+ * renderer.js 另有 dragstart preventDefault 兜底（覆盖非 img 的可拖元素）。
+ */
+img { -webkit-user-drag: none; }
+
 html, body {
   width: 100%;
   height: 100%;
